@@ -1,0 +1,115 @@
+**/build
+
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+# Note that .so files are not ignored since the repo contains symlinks to such files
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# IDE stuff
+*.vscode
+*.*~
+TAGS
+
+# Build files
+*build
+*install
+
+# Python
+*.pyc
+**/*.egg-info
+**/__pycache__
+**/.hypothesis/*
+
+# Documentation
+*docs/_build
+*docs/doxyoutput
+*docs/api
+
+# Logs
+*logs/
+
+# outputs
+*outputs/
+
+# Training images
+*training_images/
+
+# Self Training logs and outputs
+*self_supervision_logs/
+*self_supervision_outputs/
+
+# Models
+*models/
+*isaaclab_arena/embodiments/g1/wbc_policy/models/
+*isaaclab_arena/embodiments/g1/wbc_policy/robot_model/
+
+# Agent generated environments
+*isaaclab_arena_environments/agent_generated/
+
+# Local planning files
+/CONTEXT.md
+/CONTEXT-MAP.md
+
+# Datasets
+*datasets/
+
+# Training logs and outputs
+*wandb/
+
+# Ignore plots
+isaaclab_arena/tests/**.png
+# Images written by tests when their SAVE_IMAGES debugging flag is turned on
+isaaclab_arena/tests/output/
+
+# Ignore core dumps produced by debugpy
+core
+core.*
+
+# venvs
+**venv_docs/
+
+# Development and cache folders
+/__*
+
+# uv venv (Arena native install)
+.venv*/
+
+# G1 fast-transport challenge: run outputs and showcase media (not part of the repository)
+challenge_results/
+showcase/clips/
+showcase/final/
+showcase/segments/
+showcase/logs/
+showcase/textures/
+showcase/site/media/
+showcase/site/videos/
+*.patch

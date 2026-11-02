@@ -1,0 +1,510 @@
+# Copyright (c) 2025-2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: IsaacLab Arena CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  push:
+    branches: [ "main" ]
+  schedule:
+    # Nightly at 06:00 UTC — runs the full suite (including the native-uv job;
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+# Concurrency control to prevent parallel runs on the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  issues: read
+
+env:
+  NGC_API_KEY: ${{ secrets.ARENA_NGC_API_KEY }}
+  OMNI_PASS: ${{ secrets.OMNI_PASS }}
+  OMNI_USER: ${{ secrets.OMNI_USER }}
+  ARENA_IMAGE: nvcr.io/nvstaging/isaac-amr/isaaclab_arena
+  # Disable omniclient hub mode to avoid ~10s startup time for sim startup.
+  OMNICLIENT_HUB_MODE: disabled
+
+
+jobs:
+
+  pre_commit:
+    name: Pre-commit
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 30
+
+    container:
+      image: python:3.11-slim
+
+    env:
+      # We're getting issues with the markers on the checked out files.
+      SKIP: check-executables-have-shebangs
+
+    steps:
+      - &install_git_step
+        name: Install git (and tools needed by hooks)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git git-lfs clang-format ca-certificates make
+          git --version
+          git lfs version
+
+      # Clean up residual stuff due to symlinks in the submodules directory
+      # We do this prior to checkout because the symlink causes issues if it's there from a previous run.
+      - &cleanup_step
+        name: Clean up symlinks in submodules directory
+        run: |
+          rm -f .git/modules/submodules/IsaacLab/index.lock || true
+          rm -rf submodules/* || true
+
+      # Fix "detected dubious ownership in repository" inside containers
+      - &mark_repo_safe_step
+        name: Mark repo as safe for git
+        run: git config --global --add safe.directory "$PWD"
+
+      # Checkout Code
+      - &checkout_step
+        name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          # LFS checkout here somehow causes issues when LFS stuff changes over time.
+          # So I do LFS manually in a step after.
+          # lfs: true
+
+      # Pull LFS files explicitly (in case checkout didn't get them all)
+      - &git_lfs_step
+        name: Git LFS
+        run: |
+          git lfs update --force
+          git lfs install --local
+          git lfs pull
+
+      - name: git status
+        run: |
+          git status
+
+      - name: Run pre-commit
+        uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: --all-files --verbose
+        env:
+          # Avoid "dubious ownership" errors on restored cache dirs — use a
+          # fresh directory owned by the current process instead.
+          PRE_COMMIT_HOME: /tmp/pre-commit-cache
+
+      - name: Test cache diagnostics
+        run: python3 -m unittest discover -s docker -p 'test_report_build_cache.py' -v
+
+
+  build_and_push_image:
+    name: Build and push Arena image
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 120
+    needs: [pre_commit]
+    container:
+      image: ubuntu:24.04
+    env:
+      ARENA_TARGET: dev
+    outputs:
+      image: ${{ steps.image.outputs.ref }}
+
+    steps: &build_and_push_image_steps
+      - *install_git_step
+      - *cleanup_step
+      - *mark_repo_safe_step
+      - *checkout_step
+      - *git_lfs_step
+      - &install_docker_step
+        name: Install docker
+        run: |
+          # Install tools needed to download and verify Docker packages.
+          apt-get update
+          apt-get install -y ca-certificates curl gnupg && \
+          # Store Docker's signing key where apt can read it.
+          install -m 0755 -d /etc/apt/keyrings && \
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
+          chmod a+r /etc/apt/keyrings/docker.gpg && \
+          # Add the Docker apt repository for this architecture and Ubuntu release.
+          echo "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+          "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null &&
+          # Install the Docker CLI, Buildx, and Python for cache reports; use the runner's Docker daemon.
+          apt-get update && apt-get install -y docker-ce-cli docker-buildx-plugin python3
+          docker --version
+
+      - &docker_login_ngc_step
+        name: Docker login to NGC
+        # $oauthtoken is the literal NGC username; pipe the NGC API key via stdin
+        run: echo "${NGC_API_KEY}" | docker login nvcr.io -u '$oauthtoken' --password-stdin
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
+
+      - name: Describe cache inputs
+        run: |
+          echo "Cache: ${ARENA_IMAGE}:buildcache-main-${ARENA_TARGET}"
+          docker buildx version
+          git rev-parse HEAD
+          git submodule status
+
+      - name: Build and push candidate image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: docker/Dockerfile.isaaclab_arena
+          target: ${{ env.ARENA_TARGET }}
+          platforms: linux/amd64
+          build-args: WORKDIR=/workspaces/isaaclab_arena
+          pull: true
+          push: true
+          # Keep candidate images as single-platform manifests for NGC.
+          provenance: false
+          tags: ${{ env.ARENA_IMAGE }}:ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.ARENA_TARGET }}
+          cache-from: type=registry,ref=${{ env.ARENA_IMAGE }}:buildcache-main-${{ env.ARENA_TARGET }}
+          # PRs read the shared cache; only a push to main may replace it.
+          cache-to: >-
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'
+                && format('type=registry,ref={0}:buildcache-main-{1},mode=max,oci-mediatypes=true,image-manifest=true',
+                          env.ARENA_IMAGE, env.ARENA_TARGET) || '' }}
+
+      # Show cache hits and step timings in the job log and GitHub Actions run summary
+      # to help explain unexpected rebuilds or slow cache downloads.
+      - name: Report Docker cache usage
+        shell: bash
+        if: ${{ !cancelled() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+        # Diagnostics must not hide the original build result.
+        continue-on-error: true
+        env:
+          BUILD_REF: ${{ fromJSON(steps.build.outputs.metadata || '{}')['buildx.build.ref'] }}
+        run: |
+          # History logs expects the record ID, not the full builder/node/record reference.
+          BUILD_REF=${BUILD_REF##*/}
+          # On failure, metadata may be absent; this dedicated builder has only one build.
+          # Buildx writes raw JSON events to stderr; retain text errors in the same artifact.
+          if ! docker buildx history logs --progress=rawjson ${BUILD_REF:+"$BUILD_REF"} > build-cache.jsonl 2>&1; then
+            echo "::warning::BuildKit history lookup failed; cache diagnostics may be incomplete."
+          fi
+          python3 docker/report_build_cache.py < build-cache.jsonl | tee build-cache-summary.md
+          cat build-cache-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Save the summary and raw BuildKit events under the run's Artifacts section.
+      # Each build-cache-<target>-<attempt> download supports detailed investigation.
+      - name: Upload cache diagnostics
+        continue-on-error: true
+        if: ${{ !cancelled() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-cache-${{ env.ARENA_TARGET }}-${{ github.run_attempt }}
+          path: |
+            build-cache.jsonl
+            build-cache-summary.md
+          if-no-files-found: warn
+
+      - name: Record candidate image digest
+        id: image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "$IMAGE_DIGEST"
+          echo "ref=${ARENA_IMAGE}@${IMAGE_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Built ${ARENA_TARGET}: ${ARENA_IMAGE}@${IMAGE_DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+
+
+  build_curobo_image:
+    name: Build Arena cuRobo image
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 120
+    needs: [pre_commit]
+    container:
+      image: ubuntu:24.04
+    env:
+      ARENA_TARGET: dev-curobo
+    outputs:
+      image: ${{ steps.image.outputs.ref }}
+    steps: *build_and_push_image_steps
+
+
+  test:
+    name: Run tests
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 80
+    needs: [build_and_push_image]
+    env:
+      ARENA_INFERENCE_ENDPOINT: public
+      NVIDIA_API_KEY: ${{ secrets.ARENA_NVIDIA_API_KEY }}
+
+    container:
+      image: ${{ needs.build_and_push_image.outputs.image }}
+      credentials:
+        username: $oauthtoken
+        password: ${{ env.NGC_API_KEY }}
+
+    steps:
+      # nvidia-smi
+      - &nvidia_smi
+        name: nvidia-smi
+        run: nvidia-smi
+
+      - &lscpu
+        name: lscpu
+        run: lscpu
+
+      # Setup
+      - *install_git_step
+      - *cleanup_step
+      - *mark_repo_safe_step
+      - *checkout_step
+      - *git_lfs_step
+
+      - &install_project_step
+        name: Install project and link isaac-sim
+        run: |
+          # Test the checkout against the dependencies baked into this run's image.
+          /isaac-sim/python.sh -m pip install --no-deps --no-build-isolation -e .
+          [ -e ./submodules/IsaacLab/_isaac_sim ] || ln -s /isaac-sim ./submodules/IsaacLab/_isaac_sim
+
+      - &setup_isaac_sim_kit_cache_step
+        name: Setup Isaac Sim kit cache (shader warmup on miss)
+        uses: ./.github/actions/setup-isaac-sim-kit-cache
+
+      # Run the tests.
+      #
+      # Note(alexmillane): We have to run the tests in a specific way. To achieve a reasonable test speed,
+      # we don't close the SimulationApp between tests, where this is possible. We need, however, to restart the
+      # SimulationApp between tests that require cameras/rendering and those that don't. To make
+      # matters more complicated, since Isaac Sim 6.0, this persistent SimulationApp scheme is also not
+      # mixing well with subprocess-spawning tests. We get intermittent hangs if a subprocess-spawning
+      # test is run while a persistent SimulationApp is still open. For that reason we also need to
+      # separate those test that spawn subprocess. So in the end, we run
+      #
+      # - All tests not requiring cameras in a shared SimulationApp.
+      # - All tests requiring cameras in a shared SimulationApp.
+      # - All subprocess-spawning tests (each spawns their own SimulationApp)
+      #
+      # To restore sanity here is a goal for Isaac Lab Arena v0.3.
+      - name: Run in-process Newton tests
+        run: |
+          /isaac-sim/python.sh -m pytest -sv --durations=0 -m with_newton \
+            isaaclab_arena/tests/
+
+      - name: Run in-process PhysX tests without cameras
+        run: |
+          /isaac-sim/python.sh -m pytest -sv --durations=0 -m "not with_cameras and not with_subprocess and not with_newton" \
+            isaaclab_arena/tests/
+
+      - name: Run in-process PhysX tests with cameras
+        run: |
+          /isaac-sim/python.sh -m pytest -sv --durations=0 -m "with_cameras and not with_subprocess and not with_newton" \
+            isaaclab_arena/tests/
+
+      - name: Run GR00T policy client & data tests (lightweight gr00t deps only)
+        run: |
+          /isaac-sim/python.sh -m pytest -sv --durations=0 -m gr00t_policy \
+            isaaclab_arena_gr00t/tests/
+
+
+  tests_with_subprocess:
+    name: Run tests with subprocess
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 120
+    needs: [build_and_push_image]
+
+    container:
+      image: ${{ needs.build_and_push_image.outputs.image }}
+      credentials:
+        username: $oauthtoken
+        password: ${{ env.NGC_API_KEY }}
+    steps:
+      # nvidia-smi
+      - *nvidia_smi
+      - *lscpu
+
+      # Setup.
+      - *install_git_step
+      - *cleanup_step
+      - *mark_repo_safe_step
+      - *checkout_step
+      - *git_lfs_step
+      - *install_project_step
+      - *setup_isaac_sim_kit_cache_step
+
+      # NOTE(alexmillane): These tests are unreliable at the moment, and often stall,
+      # causing the whole CI run to fail. I am moving these to a parallel job, and then
+      # will make the job containing them optional in terms of passing.
+      - name: Run subprocess-spawning PhysX tests
+        run: |
+          ISAACLAB_ARENA_SUBPROCESS_TIMEOUT=900 \
+          /isaac-sim/python.sh -m pytest -sv --durations=0 -m with_subprocess \
+            isaaclab_arena/tests/
+
+
+  test_gr00t_closedloop_e2e:
+    name: GR00T closed-loop E2E
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 60
+    needs: [build_and_push_image]
+    env:
+      GR00T_REMOTE_HOST: gr00t
+      GR00T_REMOTE_PORT: "5555"
+      GR00T_REMOTE_E2E_TIMEOUT: "900"
+
+    container:
+      image: ${{ needs.build_and_push_image.outputs.image }}
+      credentials:
+        username: $oauthtoken
+        password: ${{ env.NGC_API_KEY }}
+
+    services:
+      gr00t:
+        image: nvcr.io/nvidian/gr00t1_6_arena_ci:latest
+        credentials:
+          username: $oauthtoken
+          password: ${{ env.NGC_API_KEY }}
+        ports:
+          - 5555:5555
+        # Mount the runner's workspace into the GR00T container. The baked
+        # entrypoint polls for isaaclab_arena_gr00t/docker/ci_gr00t_train_and_serve.sh.
+        volumes:
+          - ${{ github.workspace }}:/arena_workspace
+        options: >-
+          --gpus all
+          --entrypoint /workspace/ci_gr00t_train_and_serve.sh
+
+    steps:
+      - *nvidia_smi
+      - *lscpu
+      - *install_git_step
+      - *cleanup_step
+      - *mark_repo_safe_step
+      - *checkout_step
+      - *git_lfs_step
+      - *install_project_step
+      - *setup_isaac_sim_kit_cache_step
+
+      # The GR00T sidecar post-trains a tiny checkpoint before loading it. Its
+      # entrypoint waits for the LFS-backed dataset media fetched above before
+      # starting training.
+      # Poll the ZMQ endpoint because the socket can bind before the model is ready.
+      - name: Wait for GR00T server
+        timeout-minutes: 20
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          /isaac-sim/python.sh -u -m isaaclab_arena_gr00t.utils.wait_for_gr00t_server \
+            --host "${GR00T_REMOTE_HOST}" \
+            --port "${GR00T_REMOTE_PORT}" \
+            --timeout-sec 1200 \
+            --poll-interval-sec 15 \
+            --request-timeout-ms 5000
+
+      - name: Run GR00T remote closed-loop policy runner test
+        run: |
+          /isaac-sim/python.sh -m pytest -sv --durations=0 -m gr00t_remote_e2e \
+            isaaclab_arena_gr00t/tests/test_gr00t_remote_closedloop_policy_runner.py
+
+
+  test_curobo_deps:
+    name: cuRobo deps check
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 30
+    needs: [build_curobo_image]
+
+    container:
+      image: ${{ needs.build_curobo_image.outputs.image }}
+      credentials:
+        username: $oauthtoken
+        password: ${{ env.NGC_API_KEY }}
+
+    steps:
+      - *nvidia_smi
+      - *lscpu
+      - *install_git_step
+      - *cleanup_step
+      - *mark_repo_safe_step
+      - *checkout_step
+      - *git_lfs_step
+      - *install_project_step
+
+      - name: Run cuRobo dependency check
+        run: |
+          MPLCONFIGDIR=/tmp/mpl /isaac-sim/python.sh -m pytest -sv --durations=0 -m curobo_deps \
+            isaaclab_arena_curobo/tests/
+
+
+  build_docs_pre_merge:
+    name: Build the docs (pre-merge)
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 30
+    needs: [pre_commit]
+
+    container:
+      image: python:3.11-slim
+
+    steps:
+      # Setup.
+      - *install_git_step
+      - *mark_repo_safe_step
+      - *cleanup_step
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Build docs for the current branch (validates PR changes)
+      - name: Build docs
+        working-directory: ./docs
+        run: |
+          pip3 install -r requirements.txt
+          make SPHINXOPTS=-W html
+
+  build_and_push_image_post_merge:
+    name: Publish tested NGC image (post-merge)
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 15
+    needs: [build_and_push_image, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    container:
+      image: ubuntu:24.04
+    env:
+      CANDIDATE_IMAGE: ${{ needs.build_and_push_image.outputs.image }}
+
+    steps:
+      - *install_docker_step
+      - *docker_login_ngc_step
+      - name: Publish the tested image without rebuilding
+        run: |
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${ARENA_IMAGE}:latest" "$CANDIDATE_IMAGE"
+
+
+  build_and_push_curobo_image_post_merge:
+    name: Publish tested cuRobo NGC image (post-merge)
+    runs-on: [self-hosted, gpu-arena]
+    timeout-minutes: 15
+    # A cuRobo failure must not block the base image's publication.
+    needs: [build_curobo_image, test, test_curobo_deps]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    container:
+      image: ubuntu:24.04
+    env:
+      CANDIDATE_IMAGE: ${{ needs.build_curobo_image.outputs.image }}
+
+    steps:
+      - *install_docker_step
+      - *docker_login_ngc_step
+      - name: Publish the tested cuRobo image without rebuilding
+        run: |
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${ARENA_IMAGE}:curobo" "$CANDIDATE_IMAGE"

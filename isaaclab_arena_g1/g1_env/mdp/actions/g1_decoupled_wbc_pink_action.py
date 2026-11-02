@@ -1,0 +1,413 @@
+# Copyright (c) 2025-2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import numpy as np
+import torch
+from collections.abc import Sequence
+from scipy.spatial.transform import Rotation as R
+from typing import TYPE_CHECKING
+
+import warp as wp
+from isaaclab.assets.articulation import Articulation
+
+from isaaclab_arena_g1.g1_env.mdp.actions.g1_decoupled_wbc_joint_action import G1DecoupledWBCJointAction
+from isaaclab_arena_g1.g1_whole_body_controller.wbc_policy.g1_wbc_upperbody_ik.g1_wbc_upperbody_controller import (
+    G1WBCUpperbodyController,
+)
+from isaaclab_arena_g1.g1_whole_body_controller.wbc_policy.policy.action_constants import (
+    LEFT_HAND_STATE_DIM,
+    LEFT_HAND_STATE_IDX,
+    LEFT_WRIST_LINK_NAME,
+    LEFT_WRIST_POS_DIM,
+    LEFT_WRIST_POS_END_IDX,
+    LEFT_WRIST_POS_START_IDX,
+    LEFT_WRIST_QUAT_DIM,
+    LEFT_WRIST_QUAT_END_IDX,
+    LEFT_WRIST_QUAT_START_IDX,
+    NAVIGATE_THRESHOLD,
+    RIGHT_HAND_STATE_DIM,
+    RIGHT_HAND_STATE_IDX,
+    RIGHT_WRIST_LINK_NAME,
+    RIGHT_WRIST_POS_DIM,
+    RIGHT_WRIST_POS_END_IDX,
+    RIGHT_WRIST_POS_START_IDX,
+    RIGHT_WRIST_QUAT_DIM,
+    RIGHT_WRIST_QUAT_END_IDX,
+    RIGHT_WRIST_QUAT_START_IDX,
+)
+from isaaclab_arena_g1.g1_whole_body_controller.wbc_policy.run_policy import postprocess_actions, prepare_observations
+from isaaclab_arena_g1.g1_whole_body_controller.wbc_policy.utils.p_controller import PController
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedEnv
+
+    from isaaclab_arena.embodiments.g1.mdp.actions.g1_decoupled_wbc_pink_action_cfg import G1DecoupledWBCPinkActionCfg
+
+
+# Below this 2-norm we treat an xyzw quaternion as the all-zeros sentinel produced by
+# ``torch.zeros(action_space)`` and replace it with identity. Generous enough to also
+# absorb fp32 rounding around true-zero inputs without ever hitting a normalized quat
+# (whose 2-norm is 1.0).
+_QUAT_ZERO_NORM_TOL = 1e-6
+
+
+def _identity_if_zero_norm_xyzw(quat_xyzw: torch.Tensor) -> torch.Tensor:
+    """Return ``quat_xyzw`` unchanged, or identity ``(0, 0, 0, 1)`` if its 2-norm ~= 0."""
+    if torch.linalg.vector_norm(quat_xyzw) < _QUAT_ZERO_NORM_TOL:
+        return quat_xyzw.new_tensor([0.0, 0.0, 0.0, 1.0])
+    return quat_xyzw
+
+
+class G1DecoupledWBCPinkAction(G1DecoupledWBCJointAction):
+    """Action term for the G1 decoupled WBC policy. Upper body PINK IK control, lower body RL-based policy."""
+
+    cfg: G1DecoupledWBCPinkActionCfg
+
+    _asset: Articulation
+    """The articulation asset to which the action term is applied."""
+
+    def __init__(self, cfg: G1DecoupledWBCPinkActionCfg, env: ManagerBasedEnv):
+        """Initialize the action term.
+
+        Args:
+            cfg: The configuration for this action term.
+            env: The environment in which the action term will be applied.
+        """
+        super().__init__(cfg, env)
+
+        assert self.num_envs == 1, "PINK controller currently only supports single environment"
+
+        self.navigation_p_controller = PController(
+            distance_error_threshold=self.cfg.distance_error_threshold,
+            heading_diff_threshold=self.cfg.heading_diff_threshold,
+            kp_angular_turning_only=self.cfg.kp_angular_turning_only,
+            kp_linear_x=self.cfg.kp_linear_x,
+            kp_linear_y=self.cfg.kp_linear_y,
+            kp_angular=self.cfg.kp_angular,
+            min_vel=self.cfg.min_vel,
+            max_vel=self.cfg.max_vel,
+            num_envs=self.num_envs,
+            inplace_turning_flag=self.cfg.turning_first,
+        )
+
+        # Mimic navigation P-controller variables
+        self._is_navigating = False
+        self._navigation_goal_reached = False
+        self._navigation_step_counter = 0
+        self._num_navigation_subgoals_reached = -1
+        self._navigate_cmd = torch.zeros([self.num_envs, 3], device=self.device)
+        self._torso_orientation_rpy_cmd = torch.zeros([self.num_envs, 3], device=self.device)
+
+        # Create the PINK IK controller. By default the IK only drives the "arms" group;
+        # the embodiment may extend this via `upperbody_extra_active_joints` (e.g. AGILE-pink
+        # adds waist_roll_joint and waist_pitch_joint).
+        self.upperbody_controller = G1WBCUpperbodyController(
+            robot_model=self.robot_model,
+            body_active_joint_groups=list(self.cfg.upperbody_active_joint_groups),
+            extra_active_joints=list(self.cfg.upperbody_extra_active_joints),
+        )
+
+        # Map any extra (non-"upper_body"-group) IK-active joints to their sim-side joint
+        # indices so we can splice the IK solution back into ``_processed_actions`` after
+        # the WBC postprocess (which writes only ``upper_body`` and ``lower_body`` slots).
+        self._extra_active_joint_sim_indices: list[int] = []
+        self._extra_active_joint_full_indices: list[int] = []
+        sim_joint_names = self._asset.data.joint_names
+        full_joint_names = self.robot_model.joint_names
+        for jn in self.cfg.upperbody_extra_active_joints:
+            if jn not in sim_joint_names:
+                raise ValueError(f"Extra active joint '{jn}' not found in articulation joint_names")
+            if jn not in full_joint_names:
+                raise ValueError(f"Extra active joint '{jn}' not found in robot_model joint_names")
+            self._extra_active_joint_sim_indices.append(sim_joint_names.index(jn))
+            self._extra_active_joint_full_indices.append(full_joint_names.index(jn))
+
+    # Properties.
+    # """
+    @property
+    def is_navigating(self) -> bool:
+        """Get the is navigating flag."""
+        return self._is_navigating
+
+    @property
+    def navigation_goal_reached(self) -> bool:
+        """Get the navigation goal reached tensor."""
+        return self._navigation_goal_reached
+
+    @property
+    def left_wrist_pos_dim(self) -> int:
+        """Dimension of left wrist position command."""
+        return LEFT_WRIST_POS_DIM
+
+    @property
+    def left_wrist_quat_dim(self) -> int:
+        """Dimension of left wrist quaternion command."""
+        return LEFT_WRIST_QUAT_DIM
+
+    @property
+    def right_wrist_pos_dim(self) -> int:
+        """Dimension of right wrist position command."""
+        return RIGHT_WRIST_POS_DIM
+
+    @property
+    def right_wrist_quat_dim(self) -> int:
+        """Dimension of right wrist quaternion command."""
+        return RIGHT_WRIST_QUAT_DIM
+
+    @property
+    def left_hand_state_dim(self) -> int:
+        """Dimension of left hand state command."""
+        return LEFT_HAND_STATE_DIM
+
+    @property
+    def right_hand_state_dim(self) -> int:
+        """Dimension of right hand state command."""
+        return RIGHT_HAND_STATE_DIM
+
+    @property
+    def action_dim(self) -> int:
+        """Dimension of the action space."""
+        return (
+            self.left_hand_state_dim
+            + self.right_hand_state_dim
+            + self.left_wrist_pos_dim
+            + self.left_wrist_quat_dim
+            + self.right_wrist_pos_dim
+            + self.right_wrist_quat_dim
+            + self.navigate_cmd_dim
+            + self.base_height_cmd_dim
+            + self.torso_orientation_rpy_cmd_dim
+        )
+
+    @property
+    def raw_actions(self) -> torch.Tensor:
+        """Get the raw actions tensor."""
+        return self._raw_actions
+
+    @property
+    def processed_actions(self) -> torch.Tensor:
+        """Get the processed actions tensor."""
+        return self._processed_actions
+
+    @property
+    def navigate_cmd(self):
+        return self._navigate_cmd
+
+    def compute_upperbody_joint_positions(
+        self, body_data: dict[str, np.ndarray], left_hand_state: torch.Tensor, right_hand_state: torch.Tensor
+    ) -> np.ndarray:
+        """Run the PINK IK controller to compute the target joint positions for the upper body."""
+        if self.upperbody_controller.in_warmup:
+            for _ in range(50):
+                target_robot_joints = self.upperbody_controller.inverse_kinematics(
+                    body_data, left_hand_state, right_hand_state
+                )
+            self.upperbody_controller.in_warmup = False
+        else:
+            target_robot_joints = self.upperbody_controller.inverse_kinematics(
+                body_data, left_hand_state, right_hand_state
+            )
+        return target_robot_joints
+
+    # """
+    # Operations.
+    # """
+    def process_actions(self, actions: torch.Tensor):
+        """Process the input actions and set targets for each task.
+
+        Args:
+            actions: The input actions tensor.
+
+            action tensor layout:
+            action = [left_hand_state: dim=1, 0 for open, 1 for close,
+                      right_hand_state: dim=1, 0 for open, 1 for close,
+                      left_arm_pos: dim=3, xyz position,
+                      left_arm_quat: dim=4, xyzw quaternion,
+                      right_arm_pos: dim=3, xyz position,
+                      right_arm_quat: dim=4, xyzw quaternion,
+                      navigate_cmd: dim=3, xyz velocity,
+                      base_height_cmd: dim=1, height,
+                      torso_orientation_rpy_cmd: dim=3, rpy]
+        """
+
+        # Store the raw actions
+        self._raw_actions[:] = actions[:, : self.action_dim]
+
+        # Make a copy of actions before modifying so that raw actions are not modified
+        actions_clone = actions.clone()
+
+        """
+        **************************************************
+        Upper body PINK controller
+        **************************************************
+        """
+        # Extract upper body left/right arm pos/quat from actions
+        left_arm_pos = actions_clone[:, LEFT_WRIST_POS_START_IDX:LEFT_WRIST_POS_END_IDX].squeeze(0).cpu()
+        left_arm_quat = actions_clone[:, LEFT_WRIST_QUAT_START_IDX:LEFT_WRIST_QUAT_END_IDX].squeeze(0).cpu()
+        right_arm_pos = actions_clone[:, RIGHT_WRIST_POS_START_IDX:RIGHT_WRIST_POS_END_IDX].squeeze(0).cpu()
+        right_arm_quat = actions_clone[:, RIGHT_WRIST_QUAT_START_IDX:RIGHT_WRIST_QUAT_END_IDX].squeeze(0).cpu()
+
+        # Sanitize zero-norm wrist quaternions to xyzw=(0,0,0,1) identity so scipy's
+        # R.from_quat doesn't raise. Real teleop/Mimic/RL trajectories always produce
+        # normalized quats; this only catches bootstrapping cases like the
+        # ``zero_action`` eval policy or smoke tests stepping with ``torch.zeros(...)``,
+        # where the wrist quat slice is all zeros.
+        left_arm_quat = _identity_if_zero_norm_xyzw(left_arm_quat)
+        right_arm_quat = _identity_if_zero_norm_xyzw(right_arm_quat)
+
+        # Convert from pos/quat to 4x4 transform matrix
+        left_rotmat = R.from_quat(left_arm_quat).as_matrix()
+        right_rotmat = R.from_quat(right_arm_quat).as_matrix()
+
+        left_arm_pose = np.eye(4)
+        left_arm_pose[:3, :3] = left_rotmat
+        left_arm_pose[:3, 3] = left_arm_pos
+
+        right_arm_pose = np.eye(4)
+        right_arm_pose[:3, :3] = right_rotmat
+        right_arm_pose[:3, 3] = right_arm_pos
+
+        # Extract left/right hand state from actions
+        left_hand_state = actions_clone[:, LEFT_HAND_STATE_IDX].squeeze(0).cpu()
+        right_hand_state = actions_clone[:, RIGHT_HAND_STATE_IDX].squeeze(0).cpu()
+
+        # Assemble data format for running IK
+        body_data = {LEFT_WRIST_LINK_NAME: left_arm_pose, RIGHT_WRIST_LINK_NAME: right_arm_pose}
+
+        # Run IK
+        target_robot_joints = self.compute_upperbody_joint_positions(body_data, left_hand_state, right_hand_state)
+
+        # Reformat the joint position tensor to the correct order for G1 upper body
+        target_upper_body_joints = target_robot_joints[self.robot_model.get_joint_group_indices("upper_body")]
+
+        # Stash the IK solution for the post-WBC writeback of extra (non-upper_body) joints.
+        self._last_ik_target_robot_joints = target_robot_joints
+
+        """
+        **************************************************
+        WBC closedloop
+        **************************************************
+        """
+        # Extract navigate_cmd  base_height_cmd, and torso_orientation_rpy_cmd from actions
+        navigate_cmd = self.get_navigation_cmd_from_actions(actions_clone).cpu()
+        base_height_cmd = self.get_base_height_cmd_from_actions(actions_clone).cpu()
+        torso_orientation_rpy_cmd = self.get_torso_orientation_rpy_cmd_from_actions(actions_clone).cpu()
+
+        if self.cfg.use_p_control:
+            if not self._is_navigating and self._navigation_goal_reached:
+                self._navigation_goal_reached = False
+
+            # Set flag for mimic to indicate that the robot has entered a navigation segment
+            if not self._is_navigating and (np.abs(navigate_cmd) > NAVIGATE_THRESHOLD).any():
+                self._is_navigating = True
+                self._navigation_step_counter = 0
+                self.navigation_p_controller.set_navigation_step_counter(self._navigation_step_counter)
+
+            # Start applying navigation P-controller if conditions are met
+            if self._is_navigating:
+                assert self.cfg.navigation_subgoals is not None
+                assert len(self.cfg.navigation_subgoals) > 0
+                self._navigation_step_counter = self.navigation_p_controller.navigation_step_counter
+
+                # No more subgoals to navigate to, stop navigation
+                if (
+                    self._num_navigation_subgoals_reached == len(self.cfg.navigation_subgoals) - 1
+                ) or self._navigation_step_counter > self.cfg.max_navigation_steps:
+                    computed_lin_vel_x, computed_lin_vel_y, computed_ang_vel = 0, 0, 0
+                    self._is_navigating = False
+                    self._navigation_goal_reached = True
+                else:
+                    target_xy_heading = self.cfg.navigation_subgoals[self._num_navigation_subgoals_reached + 1][0]
+                    self.navigation_p_controller.set_inplace_turning_flag(
+                        self.cfg.navigation_subgoals[self._num_navigation_subgoals_reached + 1][1]
+                    )
+
+                    target_xy = torch.tensor(target_xy_heading[:2])
+                    target_heading = torch.tensor(target_xy_heading[2])
+                    current_xy = wp.to_torch(self._asset.data.root_link_pos_w)
+                    current_heading = wp.to_torch(self._asset.data.heading_w)
+
+                    check_xy_reached = self.navigation_p_controller.check_xy_within_threshold(target_xy, current_xy)
+                    check_heading_reached = self.navigation_p_controller.check_heading_within_threshold(
+                        target_heading, current_heading
+                    )
+
+                    if check_xy_reached and check_heading_reached:
+                        self._num_navigation_subgoals_reached += 1
+                        computed_lin_vel_x, computed_lin_vel_y, computed_ang_vel = 0, 0, 0
+
+                        self._is_navigating = False
+                        self._navigation_goal_reached = True
+
+                    # only turing in place, but may be deviated from the command xy position
+                    elif check_heading_reached and self.navigation_p_controller.inplace_turning_flag:
+                        computed_lin_vel_x, computed_lin_vel_y, computed_ang_vel = 0, 0, 0
+
+                        self._num_navigation_subgoals_reached += 1
+                        self._is_navigating = False
+                        self._navigation_goal_reached = True
+
+                    else:
+
+                        computed_lin_vel_x, computed_lin_vel_y, computed_ang_vel = (
+                            self.navigation_p_controller.run_p_controller(
+                                target_heading=target_heading,
+                                current_heading=current_heading,
+                                target_xy=target_xy,
+                                current_xy=current_xy,
+                            )
+                        )
+                        # get single value out from the tensor
+                        if isinstance(computed_lin_vel_x, torch.Tensor):
+                            computed_lin_vel_x = computed_lin_vel_x.item()
+                        if isinstance(computed_lin_vel_y, torch.Tensor):
+                            computed_lin_vel_y = computed_lin_vel_y.item()
+                        if isinstance(computed_ang_vel, torch.Tensor):
+                            computed_ang_vel = computed_ang_vel.item()
+
+                navigate_cmd[:, 0] = computed_lin_vel_x
+                navigate_cmd[:, 1] = computed_lin_vel_y
+                navigate_cmd[:, 2] = computed_ang_vel
+
+        self._navigate_cmd = navigate_cmd.clone()
+
+        self.set_wbc_goal(navigate_cmd, base_height_cmd, torso_orientation_rpy_cmd)
+        self.wbc_policy.set_goal(self._wbc_goal)
+
+        """
+        **************************************************
+        Prepare WBC policy input
+        **************************************************
+        """
+        wbc_obs = prepare_observations(self.num_envs, self._asset.data, self.wbc_g1_joints_order)
+        self.wbc_policy.set_observation(wbc_obs)
+
+        wbc_action = self.wbc_policy.get_action(target_upper_body_joints)
+        self._processed_actions = postprocess_actions(
+            wbc_action, self._asset.data, self.wbc_g1_joints_order, self.device
+        )
+
+        # WBC writes only ``upper_body`` and ``lower_body`` slots; for joints that the IK
+        # actively drives but live outside ``upper_body`` (e.g. waist_roll/pitch for the
+        # AGILE-pink combo), splice the IK target back into ``_processed_actions`` so they
+        # actually get applied to the simulator instead of staying at the lower-body
+        # policy's default (zero) target.
+        if self._extra_active_joint_sim_indices:
+            ik_targets = self._last_ik_target_robot_joints
+            for sim_idx, full_idx in zip(self._extra_active_joint_sim_indices, self._extra_active_joint_full_indices):
+                self._processed_actions[:, sim_idx] = float(ik_targets[full_idx])
+
+    def apply_actions(self):
+        """Apply the computed joint positions based on the WBC solution."""
+        self._asset.set_joint_position_target(self._processed_actions, self._joint_ids)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        """Reset the action term for specified environments.
+        Args:
+            env_ids: A list of environment IDs to reset. If None, all environments are reset.
+        """
+        self._raw_actions[env_ids] = torch.zeros(self.action_dim, device=self.device)

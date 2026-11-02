@@ -1,0 +1,117 @@
+# Copyright (c) 2025-2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+version: 2
+workflow:
+  name: {{ workflow_name }}
+  groups:
+  - name: finetune
+    tasks:
+    - args:
+      - /tmp/entry.sh
+      command:
+      - bash
+      credentials:
+        wandb-auth:
+          WANDB_API_KEY: wandb_pass
+      downloadType: download
+      environment:
+        ACCEPT_EULA: Y
+        NO_NUCLEUS: Y
+      files:
+      - contents: |-
+          set -euxo pipefail
+
+          # Run filebrowser to access intermediate checkpoints.
+          filebrowser -r / &
+
+          echo "The contents of the input OSMO dataset:"
+          ls {{input:0}}/{{input_dataset_name}}
+
+          # Display info on the system
+          nvidia-smi
+          cd /workspace
+
+          # List the contents of the dataset
+          echo "The contents of the lerobot directory:"
+          ls {{input:0}}/{{input_dataset_name}}/{{input_demo_name}}/lerobot
+
+          # Set the WANDB_NAME environment variable
+          # Weights and Biases naming
+          export WANDB_ENTITY=nv-welcome
+          export WANDB_PROJECT="Isaac Lab Arena"
+          export WANDB_NAME="{{ workflow_name }}_$(date +%Y%m%d_%H%M%S)"
+
+          # Modify gr00t code to allow for naming of the run.
+          sed -i "s/^\(\s*run_name=\)None/\1\"${WANDB_NAME}\"/" gr00t/experiment/launch_finetune.py
+
+          # Launch finetune
+          uv run torchrun --nproc_per_node={{ gpus }} --standalone gr00t/experiment/launch_finetune.py \
+            --dataset-path="{{input:0}}/{{input_dataset_name}}/{{input_demo_name}}/lerobot" \
+            --output-dir={{output}} \
+            --modality-config-path={{ modality_config_path }} \
+            --global-batch-size={{ batch_size }} \
+            --max-steps={{ max_steps }} \
+            --num-gpus={{ gpus }} \
+            --save-total-limit=5\
+            --save-steps=5000 \
+            --base-model-path=/workspace/pretrained_ckpts/GR00T-N1.6-3B \
+            --no-tune-llm  \
+            --tune-visual \
+            --tune-projector \
+            --tune-diffusion-model \
+            --dataloader-num-workers=16 \
+            --embodiment-tag={{ embodiment_tag }} \
+            --modality-config-path={{ modality_config_path }} \
+            --color-jitter-params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
+            --use-wandb
+
+          # kill the filebrowser process
+          kill $(pgrep -f browser)
+        path: /tmp/entry.sh
+      image: nvcr.io/nvidian/gr00t_1_6_finetune:latest
+      inputs:
+      - dataset:
+          name: isaac/{{ input_dataset_name }}
+      lead: true
+      name: master
+      outputs:
+      - url: swift://pdx.s8k.io/AUTH_team-isaac/mimic/datasets/{{workflow_id}}
+  resources:
+    default:
+      cpu: {{ cpus }}
+      gpu: {{ gpus }}
+      memory: 700Gi
+      platform: ovx-l40
+      storage: 400Gi
+  timeout:
+    exec_timeout: 7d
+    queue_timeout: 2d
+
+default-values:
+  cpus: 80
+  gpus: 8
+  batch_size: 96
+  max_steps: 20000
+  # Static manipulation
+  # workflow_name: gr1_open_microwave_kitchen_gn1_6
+  # input_dataset_name: lerobot_gr1
+  # input_demo_name: gr1_open_microwave_50_generated
+  # embodiment_tag: GR1
+  # modality_config_path: /workspace/gr1_manip/gr1_arms_only_data_config.py
+
+  # Locomanipulation
+  # workflow_name: g1_move_box_galileo_gn1_6
+  # input_dataset_name: lerobot_g1
+  # input_demo_name: arena_g1_loco_manipulation_dataset_generated
+  # embodiment_tag: NEW_EMBODIMENT
+  # modality_config_path: /workspace/g1_locomanip/g1_sim_wbc_data_config.py
+
+# Static manipulation -- Place ranch dressing bottle into fridge
+  workflow_name: gr1_ranch_bottle_into_fridge_gn1_6
+  input_dataset_name: gr1_ranch_bottle_into_fridge
+  input_demo_name: ranch_bottle_into_fridge_generated_100
+  embodiment_tag: GR1
+  modality_config_path: /workspace/gr1_manip/gr1_arms_only_data_config.py

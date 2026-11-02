@@ -1,0 +1,334 @@
+[build-system]
+# >=66.1 for Python 3.12 compatibility, >=62.3 for the recursive `**` globs in
+# [tool.setuptools.package-data].
+requires = ["setuptools>=66.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "isaaclab_arena"
+version = "0.3.0"
+description = "Isaac Lab - Arena. An Isaac Lab extension for robotic policy evaluation."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "typing_extensions",
+    "onnxruntime",
+    "vuer",
+    # Arena imports isaacteleop directly; pin the validated prerelease so the
+    # Docker and native uv environments do not float independently.
+    "isaacteleop[retargeters,ui,cloudxr]==1.4.126rc1",
+    "websockets==16.1.1",
+    "lightwheel-sdk",
+    "pytest",
+    "pydantic>=2.0",
+    "openai>=2.0",
+    # Sensitivity analysis (isaaclab_arena.analysis.sensitivity), imported at module level.
+    "sbi",
+    "scipy",
+    "matplotlib",
+    "plotly",
+    "pytetwild[all]>=0.3.0,<0.4",
+    # MoviePy 1.x relies on decorator 4.x call semantics to propagate clip FPS.
+    "moviepy>=1.0.3,<2.0.0.dev0",
+    "decorator>=4.0.2,<5",
+    # HDF5 -> LeRobot video conversion uses imageio with its FFmpeg backend.
+    "imageio",
+    "imageio-ffmpeg",
+    # HDF5 -> LeRobot conversion (isaaclab_arena_gr00t.lerobot.convert_hdf5_to_lerobot), imported at module level.
+    # Pinned to 2.2.3 to match the version used in GR00T.
+    "pandas==2.2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyter",
+    "debugpy",
+    "tenacity",
+    "streamlit>=1.56",
+    "streamlit-ace>=0.1.1",
+    # Asset search for agentic environment generation. Kept here rather than behind an extra of
+    # its own: it adds one wheel, since Isaac Sim already brings everything it depends on, and an
+    # extra only bought a way to install the review GUI with its asset search missing.
+    "simready-search>=2026.4.2",
+]
+
+# PEP 735 dependency groups for the native uv install. pip (used by the Docker
+# build) ignores these groups, so Docker continues to get Isaac Lab from its
+# copied submodule and Isaac Sim from its base image.
+[dependency-groups]
+# Isaac Lab's root isaaclab-dev project is installed editable from the submodule
+# checkout. Its extras provide Isaac Sim, OV backends, Mimic, Teleop, RSL-RL,
+# and the Rerun visualizer. This group is selected by a bare `uv sync` through
+# default-groups below.
+isaaclab-from-source = [
+    "isaaclab-dev[isaacsim,ov,mimic,teleop,rsl-rl,rerun]",
+    # Keep the workspace members explicit as well. uv requires a package to be
+    # named directly in this group before a group-gated path source can satisfy
+    # the dependency declared by isaaclab-dev.
+    "isaaclab",
+    "isaaclab-assets",
+    "isaaclab-contrib",
+    "isaaclab-experimental",
+    "isaaclab-mimic",
+    "isaaclab-newton",
+    "isaaclab-ov",
+    "isaaclab-physx",
+    "isaaclab-ppisp",
+    "isaaclab-rl",
+    "isaaclab-tasks",
+    "isaaclab-tasks-experimental",
+    "isaaclab-teleop",
+    "isaaclab-visualizers",
+    # Direct torch deps so [tool.uv.sources] routes them to the cu128 index.
+    # These versions match the Isaac Lab source checkout.
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "torchaudio==2.11.0",
+    # Keep an explicitly selected source group self-sufficient as well.
+    { include-group = "openpi" },
+]
+openpi = [
+    "openpi-client",
+]
+gr00t-client = [
+    "gr00t==0.1.0",
+]
+
+[tool.uv]
+# Arena supports Linux x86_64 only; resolve and lock for exactly that platform.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Install the source-based sim stack (Isaac Lab editable from the submodule)
+# and the remote OpenPI client on a bare `uv sync`.
+default-groups = ["isaaclab-from-source", "openpi"]
+# Teleoperation requires a specific release candidate. Its exact requirement
+# above opts that package into prerelease selection without allowing unrelated
+# packages to float to prereleases.
+prerelease = "if-necessary-or-explicit"
+# Prefer the first index containing a compatible package. The explicit PyPI
+# route below handles the one known NVIDIA/PyPI name collision without merging
+# candidates from multiple indexes.
+index-strategy = "first-index"
+# Pin numpy to the exact version Isaac Sim requires: isaacsim-kernel needs
+# ==2.3.1 and numba needs <2.5. An override (not a plain dep) is needed to also
+# beat a transitive constraint that would otherwise pull numpy<2.
+# Pin coverage and packaging to versions compatible with the Isaac Sim 6.1 wheel
+# stack. These overrides resolve stricter transitive constraints that do not
+# reflect the versions used successfully in the Docker runtime.
+# Pin websockets to the Docker-validated 16.1.1. Isaac Sim 6.1's
+# isaacsim-kernel requires websockets>=12,<15, while isaacteleop[cloudxr]
+# requires >=14. This must be an override to replace the kernel's upper bound.
+# Pin the AWS/HTTP stack to the versions Isaac Sim requires: simready-search
+# asks for boto3==1.42.58, requests>=2.32.5 and s3transfer 0.16.x, all of which
+# are over-strict. The Docker image runs its S3 asset searches against the
+# boto3 1.40.61 / requests 2.32.3 / s3transfer 0.14.0 that isaacsim-kernel
+# pins. Without these overrides simready-search cannot resolve alongside either
+# environment at all, leaving the asset search with no installable runtime.
+override-dependencies = [
+    "numpy==2.3.1",
+    "mujoco~=3.11.0",
+    "mujoco-warp~=3.11.0",
+    "newton[sim]==1.5.2",
+    "newton-usd-schemas>=0.4.1",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "torchaudio==2.11.0",
+    "warp-lang==1.16.0",
+    "coverage==7.4.4",
+    "packaging==26.0",
+    "websockets==16.1.1",
+    "boto3==1.40.61",
+    "botocore==1.40.61",
+    "requests==2.32.3",
+    "s3transfer==0.14.0",
+]
+# Keep broad transitive requirements on versions validated with Isaac Sim 6.1
+# and the current Isaac Lab source checkout.
+constraint-dependencies = [
+    "pin-pink==3.3.0",
+    "pyglet<3",
+    "tinyobjloader==2.0.0rc13",
+    "mujoco-usd-converter==0.5.0",
+]
+# Use a uv-managed CPython 3.12 rather than whatever happens to be on PATH.
+python-preference = "only-managed"
+
+[[tool.uv.index]]
+url = "https://pypi.nvidia.com"
+explicit = false
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+# torch / torchvision / torchaudio are pulled transitively by Isaac Lab; steer
+# them to the CUDA 12.8 index (Linux x86_64 is the only supported platform,
+# see `environments` above).
+# mujoco-usd-converter: the NVIDIA index carries only incompatible 0.1.0
+# prereleases, so route it to PyPI.
+# Route Arena's validated isaacteleop wheel to PyPI rather than selecting a
+# same-named package from the NVIDIA index.
+mujoco-usd-converter = { index = "pypi" }
+isaacteleop = { index = "pypi" }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+gr00t = { path = "submodules/Isaac-GR00T", editable = true, group = "gr00t-client" }
+# The upstream development project and its Isaac Lab packages come editable
+# from the submodule checkout whenever the source group is active.
+isaaclab-dev = [{ path = "submodules/IsaacLab", editable = true, group = "isaaclab-from-source" }]
+isaaclab = [{ path = "submodules/IsaacLab/source/isaaclab", editable = true, group = "isaaclab-from-source" }]
+isaaclab-assets = [{ path = "submodules/IsaacLab/source/isaaclab_assets", editable = true, group = "isaaclab-from-source" }]
+isaaclab-contrib = [{ path = "submodules/IsaacLab/source/isaaclab_contrib", editable = true, group = "isaaclab-from-source" }]
+isaaclab-experimental = [{ path = "submodules/IsaacLab/source/isaaclab_experimental", editable = true, group = "isaaclab-from-source" }]
+isaaclab-mimic = [{ path = "submodules/IsaacLab/source/isaaclab_mimic", editable = true, group = "isaaclab-from-source" }]
+isaaclab-newton = [{ path = "submodules/IsaacLab/source/isaaclab_newton", editable = true, group = "isaaclab-from-source" }]
+isaaclab-ov = [{ path = "submodules/IsaacLab/source/isaaclab_ov", editable = true, group = "isaaclab-from-source" }]
+isaaclab-physx = [{ path = "submodules/IsaacLab/source/isaaclab_physx", editable = true, group = "isaaclab-from-source" }]
+isaaclab-ppisp = [{ path = "submodules/IsaacLab/source/isaaclab_ppisp", editable = true, group = "isaaclab-from-source" }]
+isaaclab-rl = [{ path = "submodules/IsaacLab/source/isaaclab_rl", editable = true, group = "isaaclab-from-source" }]
+isaaclab-tasks = [{ path = "submodules/IsaacLab/source/isaaclab_tasks", editable = true, group = "isaaclab-from-source" }]
+isaaclab-tasks-experimental = [{ path = "submodules/IsaacLab/source/isaaclab_tasks_experimental", editable = true, group = "isaaclab-from-source" }]
+isaaclab-teleop = [{ path = "submodules/IsaacLab/source/isaaclab_teleop", editable = true, group = "isaaclab-from-source" }]
+isaaclab-visualizers = [{ path = "submodules/IsaacLab/source/isaaclab_visualizers", editable = true, group = "isaaclab-from-source" }]
+
+[tool.uv.sources.openpi-client]
+git = "https://github.com/Physical-Intelligence/openpi"
+rev = "c23745b5ad24e98f66967ea795a07b2588ed6c79"
+subdirectory = "packages/openpi-client"
+
+[[tool.uv.dependency-metadata]]
+name = "gr00t"
+version = "0.1.0"
+requires-dist = [
+    "msgpack==1.1.0",
+    "numpy==2.3.1",
+    "pyzmq==27.0.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "isaaclab_arena*",
+    "isaaclab_arena_cosmos*",
+    "isaaclab_arena_curobo*",
+    "isaaclab_arena_dreamzero*",
+    "isaaclab_arena_environments*",
+    "isaaclab_arena_examples*",
+    "isaaclab_arena_g1*",
+    "isaaclab_arena_gr00t*",
+    "isaaclab_arena_openpi*",
+]
+namespaces = false
+
+# setuptools installs only .py files. Declare the configuration data files, and
+# exclude the test fixtures, for a non-editable install. The globs are recursive
+# because the environment spec directories are not packages of their own.
+[tool.setuptools.package-data]
+"*" = ["**/*.yaml", "**/*.yml", "**/*.json", "**/*.jsonl", "**/*.html"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["tests/test_data/**", "test_data/**"]
+
+# ----------------------------------------------------------------------------
+# Existing tool configuration (migrated unchanged from the previous pyproject)
+# ----------------------------------------------------------------------------
+
+[tool.isort]
+
+py_version = 312
+line_length = 120
+group_by_package = true
+
+# Files to skip
+skip_glob = ["docs/*", "logs/*", "_isaac_sim/*", ".vscode/*"]
+
+# Order of imports
+sections = [
+    "FUTURE",
+    "STDLIB",
+    "THIRDPARTY",
+    "FIRSTPARTY",
+    "LOCALFOLDER",
+]
+
+# Extra standard libraries considered as part of python (permissive licenses
+extra_standard_library = [
+    "numpy",
+    "h5py",
+    "open3d",
+    "torch",
+    "tensordict",
+    "bpy",
+    "matplotlib",
+    "gymnasium",
+    "gym",
+    "scipy",
+    "hid",
+    "yaml",
+    "prettytable",
+    "toml",
+    "trimesh",
+    "tqdm",
+    "torchvision",
+    "transformers",
+]
+# Imports from Isaac Sim and Omniverse
+known_third_party = [
+    "isaacsim.core.api",
+    "isaacsim.replicator.common",
+    "omni.replicator.core",
+    "pxr",
+    "omni.kit.*",
+    "warp",
+    "carb",
+    "Semantics",
+    "isaaclab",
+    "isaaclab_assets",
+    "isaaclab_rl",
+    "isaaclab_mimic",
+    "isaaclab_tasks",
+]
+# Imports from this repository
+known_first_party = "isaaclab_arena"
+
+[tool.pyright]
+
+include = ["source", "scripts"]
+exclude = [
+    "**/__pycache__",
+    "**/_isaac_sim",
+    "**/docs",
+    "**/logs",
+    ".git",
+    ".vscode",
+]
+
+typeCheckingMode = "basic"
+pythonVersion = "3.10"
+pythonPlatform = "Linux"
+enableTypeIgnoreComments = true
+
+# This is required as the CI pre-commit does not download the module (i.e. numpy, torch, prettytable)
+# Therefore, we have to ignore missing imports
+reportMissingImports = "none"
+# This is required to ignore for type checks of modules with stubs missing.
+reportMissingModuleSource = "none" # -> most common: prettytable in mdp managers
+
+reportGeneralTypeIssues = "none"       # -> raises 218 errors (usage of literal MISSING in dataclasses)
+reportOptionalMemberAccess = "warning" # -> raises 8 errors
+reportPrivateUsage = "warning"
+
+
+[tool.codespell]
+skip = '*.usd,*.svg,*.png,_isaac_sim*,*.bib,*.css,*/_build'
+quiet-level = 0
+# the world list should always have words in lower case
+ignore-words-list = "haa,slq,collapsable,buss,crate,reacher"

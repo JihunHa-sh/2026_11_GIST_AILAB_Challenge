@@ -1,0 +1,115 @@
+# Copyright (c) 2025-2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+import torch
+import traceback
+
+from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
+
+NUM_STEPS = 150
+HEADLESS = True
+
+
+def _test_g1_locomanip_object_on_destination_termination(simulation_app) -> bool:
+
+    from isaaclab_arena.assets.registries import AssetRegistry
+    from isaaclab_arena.cli.isaaclab_arena_cli import arena_env_builder_cfg_from_argparse, get_isaaclab_arena_cli_parser
+    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
+    from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
+    from isaaclab_arena.scene.scene import Scene
+    from isaaclab_arena.tasks.pick_and_place_task import G1PickAndPlaceMimicEnvCfg, PickAndPlaceTask
+    from isaaclab_arena.tests.utils.pick_and_place import lift_settled_objects_once
+    from isaaclab_arena.utils.pose import Pose
+
+    args_parser = get_isaaclab_arena_cli_parser()
+    args_cli = args_parser.parse_args([])
+
+    asset_registry = AssetRegistry()
+    background = asset_registry.get_asset_by_name("galileo_locomanip")()
+    brown_box = asset_registry.get_asset_by_name("brown_box")()
+    blue_sorting_bin = asset_registry.get_asset_by_name("blue_sorting_bin")()
+
+    blue_sorting_bin.set_initial_pose(
+        Pose(
+            position_xyz=(-0.2450, -1.6272, -0.2641),
+            rotation_xyzw=(0.0, 0.0, 1.0, 0.0),
+        )
+    )
+    brown_box.set_initial_pose(
+        Pose(
+            position_xyz=(-0.2450, -1.6272, 0.5),
+            rotation_xyzw=(0, 0, 0, 1),
+        )
+    )
+
+    scene = Scene(assets=[background, brown_box, blue_sorting_bin])
+
+    def _build_g1_pick_and_place_mimic_cfg(arm_mode):
+        return G1PickAndPlaceMimicEnvCfg(
+            pick_up_object_name=brown_box.name,
+            destination_location_name=blue_sorting_bin.name,
+            arm_mode=arm_mode,
+        )
+
+    task = PickAndPlaceTask(
+        pick_up_object=brown_box,
+        destination_location=blue_sorting_bin,
+        background_scene=background,
+        force_threshold=0.5,
+        velocity_threshold=0.1,
+        mimic_env_cfg_factory=_build_g1_pick_and_place_mimic_cfg,
+    )
+
+    isaaclab_arena_environment = IsaacLabArenaEnvironment(
+        name="galileo_g1_locomanip_pick_and_place",
+        scene=scene,
+        task=task,
+    )
+
+    builder = ArenaEnvBuilder(isaaclab_arena_environment, arena_env_builder_cfg_from_argparse(args_cli))
+    env = builder.make_registered()
+    env.reset()
+
+    try:
+        success_vec = []
+        terminated_vec = []
+        lifted_envs = torch.zeros(env.unwrapped.num_envs, dtype=torch.bool, device=env.unwrapped.device)
+        for _ in range(NUM_STEPS):
+            with torch.inference_mode():
+                lift_settled_objects_once(env.unwrapped, brown_box.name, lifted_envs)
+                actions = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+                _, _, terminated, _, _ = env.step(actions)
+
+                # Read the task's success signal
+                success = env.unwrapped.termination_manager.get_term("success")
+                success_vec.append(success.clone())
+                terminated_vec.append(terminated.item())
+
+    except Exception:
+        print("Error: {e}")
+        traceback.print_exc()
+        return False
+
+    finally:
+        env.close()
+
+    assert success_vec[0].item() is False, "Object started in the bin"
+    assert any(success_vec), "Object did not end in the bin"
+    assert any(terminated_vec), "The task was not terminated"
+    assert success_vec[-1].item() is False, "Object was not moved above the bin"
+
+    return True
+
+
+def test_g1_locomanip_object_on_destination_termination():
+    result = run_function_with_persistent_simulation_app(
+        _test_g1_locomanip_object_on_destination_termination,
+        headless=HEADLESS,
+    )
+    assert result, "Test failed"
+
+
+if __name__ == "__main__":
+    test_g1_locomanip_object_on_destination_termination()

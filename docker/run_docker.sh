@@ -1,0 +1,217 @@
+#!/bin/bash
+set -e
+DOCKER_IMAGE_NAME='isaaclab_arena'
+DOCKER_VERSION_TAG='latest'
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+source "$SCRIPT_DIR/setup/target_tag.sh"
+
+WORKDIR="/workspaces/isaaclab_arena"
+
+# Default mount directory on the host machine for the datasets
+DATASETS_HOST_MOUNT_DIRECTORY="$HOME/datasets"
+# Default mount directory on the host machine for the models
+MODELS_HOST_MOUNT_DIRECTORY="$HOME/models"
+# Default mount directory on the host machine for the evaluation directory
+EVAL_HOST_MOUNT_DIRECTORY="$HOME/eval"
+# Named image target
+DOCKER_TARGET="dev"
+BUILD_OPTIONS=()
+# Whether to forcefully rebuild the docker image
+# (it takes a while to re-build, but for testing is not really necessary)
+FORCE_REBUILD=false
+# Optional suffix appended to the container name to allow multiple containers.
+# When not set explicitly via -s, it is derived from the repo directory name
+# (see below) so each clone gets its own container automatically.
+CONTAINER_SUFFIX=""
+CONTAINER_SUFFIX_EXPLICIT=false
+
+while getopts ":d:m:e:hn:rRvn:s:ct:" OPTION; do
+    case $OPTION in
+
+        d)
+            DATASETS_HOST_MOUNT_DIRECTORY=$OPTARG
+            ;;
+        m)
+            MODELS_HOST_MOUNT_DIRECTORY=$OPTARG
+            ;;
+        e)
+            EVAL_HOST_MOUNT_DIRECTORY=$OPTARG
+            ;;
+        n)
+            DOCKER_IMAGE_NAME=${OPTARG}
+            ;;
+        r)
+            FORCE_REBUILD=true
+            ;;
+
+        R)
+            FORCE_REBUILD=true
+            BUILD_OPTIONS+=(-R)
+            ;;
+        v)
+            set -x
+            ;;
+        c)
+            DOCKER_TARGET="dev-curobo"
+            ;;
+        t)
+            DOCKER_TARGET=$OPTARG
+            ;;
+        s)
+            CONTAINER_SUFFIX="-${OPTARG}"
+            CONTAINER_SUFFIX_EXPLICIT=true
+            ;;
+        h)
+            script_name=$(basename "$0")
+            echo "Helper script to build and IsaacLab Arena docker environment."
+            echo ""
+            echo "Usage:"
+            echo "$script_name [options]"
+            echo ""
+            echo "Options:"
+            echo "  -v (Verbose output)"
+            echo "  -d <datasets directory> (Path to datasets on the host. Default is \"$DATASETS_HOST_MOUNT_DIRECTORY\".)"
+            echo "  -m <models directory> (Path to models on the host. Default is \"$MODELS_HOST_MOUNT_DIRECTORY\".)"
+            echo "  -e <evaluation directory> (Path to evaluation data on the host. Default is \"$EVAL_HOST_MOUNT_DIRECTORY\".)"
+            echo "  -n <docker name> (Name of the docker image that will be built or used. Default is \"$DOCKER_IMAGE_NAME\".)"
+            echo "  -r (Force rebuilding of the docker image.)"
+            echo "  -R (Force rebuilding of the docker image, without cache.)"
+            echo "  -c (Select the dev-curobo target.)"
+            echo "  -t <target> (Select dev or dev-curobo; default: dev.)"
+            echo "  -s <suffix> (Suffix appended to the container name, allowing multiple containers to run simultaneously."
+            echo "      Defaults to the repo directory name after 'IsaacLab-Arena', so each clone gets its own container.)"
+            exit 0
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            exit 1
+            ;;
+        :)
+            echo "Option -$OPTARG requires an argument." >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Shift off the processed options so that $@ has a command to pass to docker run
+shift $((OPTIND-1))
+
+# Derive the container suffix from the repo directory name when not set via -s,
+# so each clone gets its own container (e.g. IsaacLab-Arena_foo -> "-foo").
+# The canonical "IsaacLab-Arena" clone keeps the bare "isaaclab_arena-latest" name.
+if [ "$CONTAINER_SUFFIX_EXPLICIT" = false ]; then
+    repo_dir=$(basename "$(cd "$SCRIPT_DIR/.." && pwd)")
+    derived=${repo_dir#IsaacLab-Arena}
+    derived=${derived#[-_]}
+    [ -n "$derived" ] && CONTAINER_SUFFIX="-${derived}"
+fi
+
+DOCKER_VERSION_TAG=$(default_tag_for_target "$DOCKER_TARGET")
+
+# Display the values being used
+echo "Using Docker image: $DOCKER_IMAGE_NAME:$DOCKER_VERSION_TAG"
+
+echo "Using Docker target: $DOCKER_TARGET"
+
+if [ "$(docker images -q $DOCKER_IMAGE_NAME:$DOCKER_VERSION_TAG 2> /dev/null)" ] && \
+    [ "$FORCE_REBUILD" = false ]; then
+    echo "Docker image $DOCKER_IMAGE_NAME:$DOCKER_VERSION_TAG already exists. Not rebuilding."
+    echo "Use -r option to force the rebuild."
+else
+    "$SCRIPT_DIR/build_docker.sh" -t "$DOCKER_TARGET" \
+        -n "${DOCKER_IMAGE_NAME}:${DOCKER_VERSION_TAG}" "${BUILD_OPTIONS[@]}"
+fi
+
+# Remove any exited containers
+if [ "$(docker ps -a --quiet --filter status=exited --filter "name=^${DOCKER_IMAGE_NAME}-${DOCKER_VERSION_TAG}${CONTAINER_SUFFIX}$")" ]; then
+    docker rm $DOCKER_IMAGE_NAME-$DOCKER_VERSION_TAG$CONTAINER_SUFFIX > /dev/null
+fi
+
+add_volume_if_it_exists() {
+    local src="$1"
+    local dst="$2"
+    [ -d "$src" ] && echo "-v $src:$dst"
+}
+
+# Forward host SSH auth into the container when available.
+SSH_DOCKER_ARGS=()
+if [ -S "$SSH_AUTH_SOCK" ]; then
+    SSH_DOCKER_ARGS+=("-v" "$SSH_AUTH_SOCK:/ssh-agent")
+    SSH_DOCKER_ARGS+=("--env" "SSH_AUTH_SOCK=/ssh-agent")
+fi
+
+# If container is running, attach to it, otherwise start
+if [ "$( docker container inspect -f '{{.State.Running}}' $DOCKER_IMAGE_NAME'-'$DOCKER_VERSION_TAG$CONTAINER_SUFFIX 2>/dev/null)" = "true" ]; then
+  echo "Container already running. Attaching."
+  docker exec -it $DOCKER_IMAGE_NAME-$DOCKER_VERSION_TAG$CONTAINER_SUFFIX su $(id -un)
+else
+    DOCKER_RUN_ARGS=("--name" "$DOCKER_IMAGE_NAME-$DOCKER_VERSION_TAG$CONTAINER_SUFFIX"
+                    "--privileged"
+                    "--ulimit" "memlock=-1"
+                    "--ulimit" "stack=-1"
+                    "--ipc=host"
+                    "--net=host"
+                    "--runtime=nvidia"
+                    "--gpus=all"
+                    "-v" "$(cd "$SCRIPT_DIR/.." && pwd):${WORKDIR}"
+                    $(add_volume_if_it_exists $DATASETS_HOST_MOUNT_DIRECTORY /datasets)
+                    $(add_volume_if_it_exists $MODELS_HOST_MOUNT_DIRECTORY /models)
+                    $(add_volume_if_it_exists $EVAL_HOST_MOUNT_DIRECTORY /eval)
+                    "-v" "$HOME/.bash_history:/home/$(id -un)/.bash_history"
+                    "-v" "$HOME/.config/osmo:/home/$(id -un)/.config/osmo"
+                    "-v" "$HOME/.config/gh:/home/$(id -un)/.config/gh"
+                    "-v" "$HOME/.cache:/home/$(id -un)/.cache"
+                    "-v" "/tmp:/tmp"
+                    "-v" "/tmp/.X11-unix:/tmp/.X11-unix:rw"
+                    "-v" "/var/run/docker.sock:/var/run/docker.sock"
+                    "-v" "$HOME/.Xauthority:/root/.Xauthority"
+                    "${SSH_DOCKER_ARGS[@]}"
+                    # Mount host SSL certificate store so the container trusts CA certs
+                    "-v" "/etc/ssl/certs:/etc/ssl/certs:ro"
+                    "--env" "DISPLAY"
+                    "--env" "ACCEPT_EULA=Y"
+                    "--env" "PRIVACY_CONSENT=Y"
+                    "--env" "DOCKER_RUN_USER_ID=$(id -u)"
+                    "--env" "DOCKER_RUN_USER_NAME=$(id -un)"
+                    "--env" "DOCKER_RUN_GROUP_ID=$(id -g)"
+                    "--env" "DOCKER_RUN_GROUP_NAME=$(id -gn)"
+                    # CloudXR shared volume: TeleopCore's run_cloudxr_via_docker.sh writes runtime
+                    # files to CXR_HOST_VOLUME_PATH (default ~/.cloudxr) on the host.
+                    "-v" "${CXR_HOST_VOLUME_PATH:-$HOME/.cloudxr}:/cloudxr"
+                    "--env" "XR_RUNTIME_JSON=/cloudxr/openxr_cloudxr.json"
+                    "--env" "NV_CXR_RUNTIME_DIR=/cloudxr/run"
+                    # NOTE(alexmillane, 2025.07.23): This looks a bit suspect to me. We should be running
+                    # as a user inside the container, not root. I've left it in for now, but we should
+                    # remove it, if indeed it's not needed.
+                    # "--env" "OMNI_KIT_ALLOW_ROOT=1"
+                    "--env" "ISAACLAB_PATH=${WORKDIR}/submodules/IsaacLab"
+                    # Tell requests/urllib3 to use the system cert bundle
+                    "--env" "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"
+                    )
+
+    # map omniverse auth or config so we have connection to the dev nucleus
+    if [ -n "$OMNI_PASS" ]; then
+        DOCKER_RUN_ARGS+=("--env" "OMNI_USER=\$omni-api-token")
+        DOCKER_RUN_ARGS+=("--env" "OMNI_PASS=$OMNI_PASS")
+    else
+        if [ -d "$HOME/.nvidia-omniverse" ]; then
+            DOCKER_RUN_ARGS+=("-v" "$HOME/.nvidia-omniverse:/home/$(id -un)/.nvidia-omniverse")
+        fi
+    fi
+
+    # pass through the agentic env-gen endpoint selection and its API keys; values are
+    # inherited from the host shell so the key never lives in the repo.
+    for AGENTIC_ENV_VAR in NV_API_KEY NVIDIA_API_KEY OPENAI_API_KEY ARENA_INFERENCE_ENDPOINT; do
+        if [ -n "${!AGENTIC_ENV_VAR}" ]; then
+            DOCKER_RUN_ARGS+=("--env" "$AGENTIC_ENV_VAR")
+        fi
+    done
+
+    # Allow X11 connections
+    if [ -n "${DISPLAY:-}" ]; then
+        xhost +local:docker > /dev/null
+    fi
+
+    docker run "${DOCKER_RUN_ARGS[@]}" --interactive --rm --tty ${DOCKER_IMAGE_NAME}:${DOCKER_VERSION_TAG} "${@}"
+fi

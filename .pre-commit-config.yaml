@@ -1,0 +1,86 @@
+# Copyright (c) 2025-2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+repos:
+  - repo: https://github.com/python/black
+    rev: 24.3.0
+    hooks:
+      - id: black
+        args: ["--line-length", "120", "--unstable"]
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.0.0
+    hooks:
+      - id: flake8
+        additional_dependencies: [flake8-simplify, flake8-return]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: check-symlinks
+      - id: destroyed-symlinks
+      - id: check-added-large-files
+        args: ["--maxkb=2000"]  # restrict files more than 2 MB. Should use git-lfs instead.
+      - id: check-yaml
+        exclude: ^osmo/  # The linter gets triggered by the jinja templates in the osmo directory.
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+      - id: debug-statements
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        name: isort (python)
+        args: ["--profile", "black", "--filter-files"]
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.15.1
+    hooks:
+      - id: pyupgrade
+        args: ["--py310-plus"]
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        # THIRDPARTY: isort uses this exact section name; it is not a spelling error.
+        # ObjectIn: names a planned Arena task type.
+        args: ['--ignore-regex=\b(THIRDPARTY|ObjectIn)\b']
+        additional_dependencies:
+        - tomli
+  - repo: https://github.com/pre-commit/pygrep-hooks
+    rev: v1.10.0
+    hooks:
+      - id: rst-backticks
+      - id: rst-directive-colons
+      - id: rst-inline-touching-normal
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.1
+    hooks:
+      - id: insert-license
+        files: \.(py|ya?ml)$
+        args:
+          # - --remove-header    # Remove existing license headers. Useful when updating license.
+          - --license-filepath
+          - .github/LICENSE_HEADER.txt
+          - --use-current-year
+        exclude: "submodules/"
+
+  - repo: local
+    hooks:
+      - id: check-contributors
+        name: Check that CONTRIBUTORS.md lists all contributors
+        entry: python3 tools/check_contributors.py
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: fix-new-file-copyright-year
+        name: Rewrite new files to use the current copyright year
+        entry: python3 tools/fix_new_file_copyright_year.py
+        language: system
+        types_or: [python, yaml]  # match insert-license's .(py|ya?ml)$ scope
+        exclude: "submodules/"

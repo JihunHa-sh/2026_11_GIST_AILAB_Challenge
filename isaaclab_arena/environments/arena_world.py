@@ -1,0 +1,345 @@
+# Copyright (c) 2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Query live Arena scene state and cache derived geometry.
+
+Arena transforms use target-source notation: T_A_B maps points from frame B
+into frame A. W is the simulation world, and F is the queried root-link or prim
+frame. E is each Isaac Lab local environment frame, aligned with W and located
+at the corresponding row of scene.env_origins. Pose method suffixes _w and _e
+indicate whether a pose is expressed in W or E.
+"""
+
+from __future__ import annotations
+
+import torch
+
+from isaaclab.scene import InteractiveScene
+from isaaclab.utils.math import quat_apply
+
+import isaaclab_arena.environments.arena_world_scene_access as scene_access
+from isaaclab_arena.utils.bounding_box import AxisAlignedBoundingBox
+from isaaclab_arena.utils.joint_utils import get_joint_position_from_articulation
+
+
+class ArenaWorld:
+    """Provide name-based pose, velocity, articulation, and geometry queries."""
+
+    def __init__(self, scene: InteractiveScene):
+        self._scene = scene
+        self._aabbs_in_local_frame_cache: dict[str, AxisAlignedBoundingBox] = {}
+        self._scene_extra_pose_reader_cache: dict[str, scene_access.SceneExtraPoseReader] = {}
+
+    # -------------------------------------------------------------------------
+    # Rooted object APIs
+    # -------------------------------------------------------------------------
+
+    def get_pose_w(self, scene_key: str) -> torch.Tensor:
+        """Return the world-frame pose of a rigid-object root link, articulation root link, or scene extra.
+
+        The tensor has shape (num_envs, 7), with each pose ordered as
+        (x, y, z, qx, qy, qz, qw).
+        """
+        scene = self._scene
+        # Rigid objects and articulations expose their live root-link poses directly. Scene
+        # extras are plain cloned prims, so their live post-clone poses require a FrameView-backed reader.
+        if scene_key in scene.rigid_objects:
+            T_W_F = scene.rigid_objects[scene_key].data.root_pose_w.torch
+        elif scene_key in scene.articulations:
+            T_W_F = scene.articulations[scene_key].data.root_pose_w.torch
+        else:
+            assert scene_key in scene.extras, (
+                "ArenaWorld pose queries require a scene key registered in InteractiveScene.rigid_objects, "
+                "InteractiveScene.articulations, or InteractiveScene.extras; "
+                f"'{scene_key}' is registered in none of them."
+            )
+            pose_reader = self._get_scene_extra_pose_reader(scene, scene_key)
+            T_W_F = pose_reader.get_pose_w()
+
+        assert T_W_F.shape == (
+            scene.num_envs,
+            7,
+        ), f"Pose for scene key '{scene_key}' has shape {tuple(T_W_F.shape)}; expected ({scene.num_envs}, 7)."
+        return T_W_F
+
+    def get_pose_e(self, scene_key: str) -> torch.Tensor:
+        """Return poses relative to their respective environment origins.
+
+        The returned tensor is a copy with shape (num_envs, 7), with each pose
+        ordered as (x, y, z, qx, qy, qz, qw).
+        """
+        T_E_F = self.get_pose_w(scene_key).clone()
+        T_E_F[:, :3] -= self._scene.env_origins
+        return T_E_F
+
+    def get_root_linear_velocity_w(self, scene_key: str) -> torch.Tensor:
+        """Return the world-frame root linear velocity of a rigid object or articulation.
+
+        The tensor has shape (num_envs, 3).
+        """
+        scene = self._scene
+        if scene_key in scene.rigid_objects:
+            root_asset = scene.rigid_objects[scene_key]
+        else:
+            assert scene_key in scene.articulations, (
+                "ArenaWorld root velocity queries require a scene key registered in InteractiveScene.rigid_objects "
+                f"or InteractiveScene.articulations; '{scene_key}' is registered in neither."
+            )
+            root_asset = scene.articulations[scene_key]
+        root_linear_velocity_w = root_asset.data.root_lin_vel_w.torch
+        assert root_linear_velocity_w.shape == (scene.num_envs, 3), (
+            f"Scene key '{scene_key}' returned root linear velocity shape "
+            f"{tuple(root_linear_velocity_w.shape)}; expected ({scene.num_envs}, 3)."
+        )
+        return root_linear_velocity_w
+
+    def get_root_angular_velocity_w(self, scene_key: str) -> torch.Tensor:
+        """Return the world-frame root angular velocity of a rigid object or articulation.
+
+        The tensor has shape (num_envs, 3).
+        """
+        scene = self._scene
+        if scene_key in scene.rigid_objects:
+            root_asset = scene.rigid_objects[scene_key]
+        else:
+            assert scene_key in scene.articulations, (
+                "ArenaWorld root velocity queries require a scene key registered in InteractiveScene.rigid_objects "
+                f"or InteractiveScene.articulations; '{scene_key}' is registered in neither."
+            )
+            root_asset = scene.articulations[scene_key]
+        root_angular_velocity_w = root_asset.data.root_ang_vel_w.torch
+        assert root_angular_velocity_w.shape == (scene.num_envs, 3), (
+            f"Scene key '{scene_key}' returned root angular velocity shape "
+            f"{tuple(root_angular_velocity_w.shape)}; expected ({scene.num_envs}, 3)."
+        )
+        return root_angular_velocity_w
+
+    # -------------------------------------------------------------------------
+    # Articulation APIs
+    # -------------------------------------------------------------------------
+
+    def get_joint_position(self, scene_key: str, joint_name: str) -> torch.Tensor:
+        """Return a named articulation joint's position for each environment.
+
+        Args:
+            scene_key: Articulation scene entity name.
+            joint_name: Exact joint name within the articulation.
+
+        Returns:
+            Tensor of shape (num_envs,), in radians for revolute joints or meters
+            for prismatic joints.
+        """
+        assert scene_key in self._scene.articulations, f"'{scene_key}' must name an articulation."
+        joint_position = get_joint_position_from_articulation(self._scene.articulations[scene_key], joint_name)
+        assert joint_position.shape == (
+            self._scene.num_envs,
+        ), f"Joint '{joint_name}' returned shape {tuple(joint_position.shape)}; expected ({self._scene.num_envs},)."
+        return joint_position
+
+    def get_joint_position_target(self, scene_key: str, joint_name: str) -> torch.Tensor:
+        """Return a named joint's most recently applied position target.
+
+        Args:
+            scene_key: Articulation scene entity name.
+            joint_name: Exact joint name within the articulation.
+
+        Returns:
+            Tensor of shape (num_envs,), in radians for revolute joints or meters
+            for prismatic joints, from the articulation's command buffer.
+        """
+        assert scene_key in self._scene.articulations, f"'{scene_key}' must name an articulation."
+        data = self._scene.articulations[scene_key].data
+        assert joint_name in data.joint_names, f"Articulation '{scene_key}' has no joint '{joint_name}'."
+        target = data.joint_pos_target.torch[:, data.joint_names.index(joint_name)]
+        assert target.shape == (
+            self._scene.num_envs,
+        ), f"Joint '{joint_name}' returned target shape {tuple(target.shape)}; expected ({self._scene.num_envs},)."
+        return target
+
+    def get_body_pose_w(self, scene_key: str, body_name: str) -> torch.Tensor:
+        """Return the world-frame link pose of a named articulation body.
+
+        Args:
+            scene_key: Articulation scene entity name.
+            body_name: Exact body name within the articulation.
+
+        Returns:
+            Tensor of shape (num_envs, 7), ordered as (x, y, z, qx, qy, qz, qw).
+        """
+        assert scene_key in self._scene.articulations, f"'{scene_key}' must name an articulation."
+        data = self._scene.articulations[scene_key].data
+        assert body_name in data.body_names, f"Articulation '{scene_key}' has no body '{body_name}'."
+        T_W_B = data.body_link_pose_w.torch[:, data.body_names.index(body_name)]
+        assert T_W_B.shape == (
+            self._scene.num_envs,
+            7,
+        ), f"Body '{body_name}' returned pose shape {tuple(T_W_B.shape)}; expected ({self._scene.num_envs}, 7)."
+        return T_W_B
+
+    def get_frame_position_w(self, scene_key: str, target_frame_name: str | None = None) -> torch.Tensor:
+        """Return a frame transformer's target position in world coordinates.
+
+        Args:
+            scene_key: Frame-transformer sensor name in the scene.
+            target_frame_name: Named target within the sensor, or None for its
+                first target, matching the end-effector reward convention.
+
+        Returns:
+            Tensor of shape (num_envs, 3), including the sensor's configured offset.
+        """
+        assert scene_key in self._scene.sensors, f"'{scene_key}' must name a frame-transformer sensor."
+        data = self._scene.sensors[scene_key].data
+        target_index = 0
+        if target_frame_name is not None:
+            assert (
+                target_frame_name in data.target_frame_names
+            ), f"Sensor '{scene_key}' has no target frame '{target_frame_name}'."
+            target_index = data.target_frame_names.index(target_frame_name)
+        position_w = data.target_pos_w.torch[:, target_index]
+        assert position_w.shape == (self._scene.num_envs, 3), (
+            f"Frame sensor '{scene_key}' returned position shape {tuple(position_w.shape)}; "
+            f"expected ({self._scene.num_envs}, 3)."
+        )
+        return position_w
+
+    # -------------------------------------------------------------------------
+    # Deformable object APIs
+    # -------------------------------------------------------------------------
+
+    def get_nodal_positions_w(self, scene_key: str) -> torch.Tensor:
+        """Return deformable nodal positions in world frame with shape (num_envs, num_nodes, 3)."""
+        deformable_objects = self._scene.deformable_objects
+        assert scene_key in deformable_objects, f"'{scene_key}' must name a deformable object."
+        nodal_positions_w = deformable_objects[scene_key].data.nodal_pos_w.torch
+        assert (
+            nodal_positions_w.ndim == 3
+            and nodal_positions_w.shape[0] == self._scene.num_envs
+            and nodal_positions_w.shape[2] == 3
+        ), (
+            f"Deformable object '{scene_key}' returned nodal positions shape {tuple(nodal_positions_w.shape)}; "
+            f"expected ({self._scene.num_envs}, num_nodes, 3)."
+        )
+        return nodal_positions_w
+
+    def get_nodal_velocities_w(self, scene_key: str) -> torch.Tensor:
+        """Return deformable nodal velocities in world frame with shape (num_envs, num_nodes, 3)."""
+        deformable_objects = self._scene.deformable_objects
+        assert scene_key in deformable_objects, f"'{scene_key}' must name a deformable object."
+        nodal_velocities_w = deformable_objects[scene_key].data.nodal_vel_w.torch
+        assert (
+            nodal_velocities_w.ndim == 3
+            and nodal_velocities_w.shape[0] == self._scene.num_envs
+            and nodal_velocities_w.shape[2] == 3
+        ), (
+            f"Deformable object '{scene_key}' returned nodal velocities shape {tuple(nodal_velocities_w.shape)}; "
+            f"expected ({self._scene.num_envs}, num_nodes, 3)."
+        )
+        return nodal_velocities_w
+
+    # -------------------------------------------------------------------------
+    # Object-type-agnostic APIs
+    # -------------------------------------------------------------------------
+
+    def get_position_w(self, scene_key: str) -> torch.Tensor:
+        """Return the world-frame center position with shape (num_envs, 3).
+
+        Deformables use their mean nodal position. Rooted entities and scene extras
+        use the translation component of their pose.
+        """
+        scene = self._scene
+        if scene_key in scene.deformable_objects:
+            position_w = scene.deformable_objects[scene_key].data.root_pos_w.torch
+        else:
+            position_w = self.get_pose_w(scene_key)[:, :3]
+        assert position_w.shape == (self._scene.num_envs, 3), (
+            f"Scene key '{scene_key}' returned position shape {tuple(position_w.shape)}; "
+            f"expected ({self._scene.num_envs}, 3)."
+        )
+        return position_w
+
+    def get_centroid_w(self, scene_key: str) -> torch.Tensor:
+        """Return the world-frame geometry centroid with shape (num_envs, 3).
+
+        Deformables use their aggregate root position. Rooted entities and scene
+        extras use the center of their local geometry bounds transformed into W.
+        """
+        scene = self._scene
+        if scene_key in scene.deformable_objects:
+            centroid_W = scene.deformable_objects[scene_key].data.root_pos_w.torch
+        else:
+            centroid_F = self.get_aabb_in_local_frame(scene_key).center
+            if centroid_F.shape[0] == 1 and scene.num_envs > 1:
+                centroid_F = centroid_F.expand(scene.num_envs, -1)
+            T_W_F = self.get_pose_w(scene_key)
+            t_W_F, q_W_F = T_W_F[:, :3], T_W_F[:, 3:]
+            centroid_W = quat_apply(q_W_F, centroid_F) + t_W_F
+        assert centroid_W.shape == (
+            scene.num_envs,
+            3,
+        ), f"Scene key '{scene_key}' returned centroid shape {tuple(centroid_W.shape)}; expected ({scene.num_envs}, 3)."
+        return centroid_W
+
+    def get_mean_linear_velocity_w(self, scene_key: str) -> torch.Tensor:
+        """Return mean linear velocity of all vertices of an object in world frame with shape (num_envs, 3).
+
+        For deformables this is the mean nodal velocity (``root_vel_w``). For rooted
+        objects this is the root linear velocity.
+        """
+        scene = self._scene
+        if scene_key in scene.deformable_objects:
+            mean_linear_velocity_w = scene.deformable_objects[scene_key].data.root_vel_w.torch
+        else:
+            mean_linear_velocity_w = self.get_root_linear_velocity_w(scene_key)
+        assert mean_linear_velocity_w.shape == (scene.num_envs, 3), (
+            f"Scene object '{scene_key}' returned mean linear velocity shape {tuple(mean_linear_velocity_w.shape)}; "
+            f"expected ({scene.num_envs}, 3)."
+        )
+        return mean_linear_velocity_w
+
+    def get_vertices_w(self, scene_key: str) -> torch.Tensor:
+        """Return deformable nodes or approximate geometry vertices in world frame ``W``.
+
+        The tensor has shape ``(num_envs, num_vertices, 3)``.
+        """
+        scene = self._scene
+        if scene_key in scene.deformable_objects:
+            vertices_w = self.get_nodal_positions_w(scene_key)
+        else:
+            # TODO(qianl, 2026-09-08): Return actual vertices once the rigid mesh cache is added.
+            vertices_pos_F = self.get_aabb_in_local_frame(scene_key).get_corners_at()
+            if vertices_pos_F.shape[0] == 1 and scene.num_envs > 1:
+                vertices_pos_F = vertices_pos_F.expand(scene.num_envs, -1, -1)
+            T_W_F = self.get_pose_w(scene_key)
+            t_W_F, q_W_F = T_W_F[:, :3], T_W_F[:, 3:]
+            q_W_F = q_W_F[:, None, :].expand(-1, vertices_pos_F.shape[1], -1)
+            vertices_w = quat_apply(q_W_F, vertices_pos_F) + t_W_F[:, None, :]
+        assert vertices_w.shape[0] == scene.num_envs and vertices_w.shape[2] == 3, (
+            f"Scene entity '{scene_key}' returned vertices shape {tuple(vertices_w.shape)}; "
+            f"expected ({scene.num_envs}, num_vertices, 3)."
+        )
+        return vertices_w
+
+    def get_aabb_in_local_frame(self, scene_key: str) -> AxisAlignedBoundingBox:
+        """Return cached rigid-object or scene-extra geometry bounds in local frame F.
+
+        The cache assumes descendants remain fixed relative to F.
+        """
+        scene = self._scene
+        if scene_key not in self._aabbs_in_local_frame_cache:
+            aabb_F = scene_access.compute_spawned_geometry_bounds_in_local_frame(scene, scene_key)
+            self._aabbs_in_local_frame_cache[scene_key] = aabb_F
+        return self._aabbs_in_local_frame_cache[scene_key]
+
+    def _get_scene_extra_pose_reader(
+        self,
+        scene: InteractiveScene,
+        scene_extra_key: str,
+    ) -> scene_access.SceneExtraPoseReader:
+        """Return the cached live-pose reader for a scene extra."""
+        if scene_extra_key not in self._scene_extra_pose_reader_cache:
+            self._scene_extra_pose_reader_cache[scene_extra_key] = scene_access.SceneExtraPoseReader(
+                scene, scene_extra_key
+            )
+        return self._scene_extra_pose_reader_cache[scene_extra_key]

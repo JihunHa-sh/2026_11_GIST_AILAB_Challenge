@@ -1,0 +1,4 @@
+# SMPL model files are licensed (smplify.is.tue.mpg.de) and must not be redistributed
+assets/smpl/*.pkl
+__pycache__/
+*.pyc

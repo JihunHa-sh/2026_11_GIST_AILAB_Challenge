@@ -1,0 +1,190 @@
+# Copyright (c) 2025-2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Configuration file for the Sphinx documentation builder.
+#
+# This file only contains a selection of the most common options. For a full
+# list see the documentation:
+# https://www.sphinx-doc.org/en/master/usage/configuration.html
+
+# pylint: disable=redefined-builtin
+
+# -- Path setup --------------------------------------------------------------
+
+# If extensions (or modules to document with autodoc) are in another directory,
+# add these directories to sys.path here. If the directory is relative to the
+# documentation root, use os.path.abspath to make it absolute, like shown here.
+#
+
+import datetime
+from typing import List
+import os
+import sys
+
+# Modify PYTHONPATH so we can import the helpers module.
+sys.path.insert(0, os.path.abspath("."))
+from helpers import TemporaryLinkcheckIgnore, to_datetime, is_expired, version_sort
+
+# NOTE(alexmillane, 2025-04-24): This file is in a separate folder to avoid
+# duplicate configuration errors coming from mypy. The only way I could find
+# to solve this was to add this new folder.
+
+# -- Project information -----------------------------------------------------
+
+project = "isaaclab_arena"
+copyright = "2025, NVIDIA"
+author = "NVIDIA"
+released = False  # Indicates if this is a public or internal version of the repo.
+
+# The header version selector derives each documented version's number from git via
+# sphinx-multiversion's `current_version` (see docs/_templates/version-badge.html), so
+# `version`/`release` are intentionally left unset here.
+
+# -- General configuration ---------------------------------------------------
+
+sys.path.append(os.path.abspath("_ext"))
+
+# Add any Sphinx extension module names here, as strings. They can be
+# extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
+# ones.
+extensions = [
+    "myst_parser",
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.autosummary",
+    "sphinx.ext.todo",
+    "sphinx.ext.githubpages",
+    "sphinx_tabs.tabs",
+    "sphinx_design",
+    "sphinxcontrib.video",
+    "sphinx_copybutton",
+    "sphinx_multiversion",
+    "isaaclab_arena_doc_tools",
+]
+
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
+
+# task_catalog.md embeds scene thumbnails via raw HTML <img> tags inside tables.
+myst_allow_insecure_html = True
+# The RoboLab catalog links to YAML specs that live outside the docs tree; keep
+# Markdown links as normal links instead of resolving them as Sphinx documents.
+myst_all_links_external = True
+
+# put type hints inside the description instead of the signature (easier to read)
+# autodoc_typehints = 'description'
+# document class *and* __init__ methods
+# autoclass_content = 'both'    #
+
+todo_include_todos = True
+
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "numpy": ("http://numpy.org/doc/stable/", None),
+}
+
+# Add any paths that contain templates here, relative to this directory.
+templates_path = ["_templates"]
+
+# List of patterns, relative to source directory, that match files and
+# directories to ignore when looking for source files.
+# This pattern also affects html_static_path and html_extra_path.
+exclude_patterns = ["_build", "_templates", "Thumbs.db", ".DS_Store", "venv_docs", "README.md"]
+
+# Be picky about missing references
+nitpicky = True  # warns on broken references
+nitpick_ignore: list[str] = []  # can exclude known bad refs
+
+# -- Options for HTML output -------------------------------------------------
+
+# The theme to use for HTML and HTML Help pages.  See the documentation for
+# a list of builtin themes.
+html_theme = "nvidia_sphinx_theme"
+# Only render project name, not the version, such that the version can be added below.
+html_title = project
+html_show_sphinx = False
+html_theme_options = {
+    "copyright_override": {"start": 2023},
+    "pygments_light_style": "tango",
+    "pygments_dark_style": "monokai",
+    "footer_links": {},
+    "github_url": "https://github.com/isaac-sim/IsaacLab-Arena",
+    "show_nav_level": 1,
+    # Render the per-version number beside the logo/title in the header navbar.
+    "navbar_start": ["navbar-logo", "version-badge"],
+    # TODO(alexmillane, 2025-04-24): Try re-enabling this once we have a pypi page.
+    # "icon_links": [
+    #     {
+    #         "name": "PyPI",
+    #         "url": "https://pypi.org/project/isaaclab_arena",
+    #         "icon": "fa-brands fa-python",
+    #         "type": "fontawesome",
+    #     },
+}
+
+# Add any paths that contain custom static files (such as style sheets) here,
+# relative to this directory. They are copied after the builtin static files,
+# so a file named "default.css" will overwrite the builtin "default.css".
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+
+# Versioning
+smv_remote_whitelist = r"^.*$"
+smv_branch_whitelist = r"^(main|release/.*)$"
+smv_tag_whitelist = r"^v.*$"
+# Remove the version badge from the sidebar.
+html_sidebars = {"**": ["sidebar-nav-bs"]}
+# Todos
+todo_include_todos = True
+
+# Linkcheck
+linkcheck_ignore = []
+
+temporary_linkcheck_ignore = [
+    # TemporaryLinkcheckIgnore(
+    #     url='https://3dmatch.cs.princeton.edu/',
+    #     start_date=to_datetime('09.07.2025'),
+    #     days=14,
+    # ),
+]
+
+for ignore in temporary_linkcheck_ignore:
+    if not is_expired(ignore.start_date, ignore.days):
+        print(f"Ignoring {ignore.url} until {ignore.start_date + datetime.timedelta(days=ignore.days)}")
+        linkcheck_ignore.append(ignore.url)
+
+#####################################
+#  Macros dependent on release state
+#####################################
+
+isaaclab_arena_docs_config = {
+    "released": released,
+    "git_url": "git@github.com:isaac-sim/IsaacLab-Arena.git",
+    "internal_code_link_base_url": "https://github.com/isaac-sim/IsaacLab-Arena",
+    "external_code_link_base_url": "UNDECIDED",
+}
+
+
+def setup(app):
+    """Register the version filter and page-specific landing assets."""
+
+    def register_filters(app):
+        app.builder.templates.environment.filters["version_sort"] = version_sort
+
+    def add_landing_assets(app, pagename, templatename, context, doctree):
+        visual_pages = {"index", "pages/motivation/motivation", "pages/gallery/index"}
+        if pagename in visual_pages:
+            app.add_js_file("visual-media.js", priority=900)
+
+        if pagename in {"index", "pages/motivation/motivation"}:
+            app.add_css_file("landing.css", priority=900)
+        elif pagename == "pages/gallery/index":
+            app.add_css_file("gallery.css", priority=900)
+
+    app.connect("builder-inited", register_filters)
+    app.connect("html-page-context", add_landing_assets)

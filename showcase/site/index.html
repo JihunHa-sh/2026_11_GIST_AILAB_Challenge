@@ -1,0 +1,313 @@
+<title>G1 Data Factory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one 1040px column; each video is a full-width "monitor" with a chapter strip under it,
+   followed by plain reference sections (pipeline, components, results, lessons, commands). */
+:root {
+  --bg: #f2f4f3;          /* cool off-white with a green bias */
+  --surface: #ffffff;
+  --ink: #15201c;
+  --muted: #5a6964;
+  --rule: #d3dbd8;
+  --accent: #c8501a;      /* teleop orange */
+  --accent-ink: #ffffff;
+  --ok: #1d7a58;
+  --bad: #b43a2e;
+  --screen: #0f1513;      /* video bezel */
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --step--1: 0.8125rem;
+  --step-0: 1rem;
+  --step-1: 1.25rem;
+  --step-2: 1.75rem;
+  --step-3: 2.5rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1513; --surface: #161e1b; --ink: #e5ece9; --muted: #95a59f; --rule: #29342f;
+    --accent: #ff7a3d; --accent-ink: #1a0d05; --ok: #3dbb8c; --bad: #ff7466; --screen: #050807;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1513; --surface: #161e1b; --ink: #e5ece9; --muted: #95a59f; --rule: #29342f;
+  --accent: #ff7a3d; --accent-ink: #1a0d05; --ok: #3dbb8c; --bad: #ff7466; --screen: #050807;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: var(--step-0);
+  line-height: 1.65; padding: 0 16px; margin: 0;
+}
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 48px 72px; display: grid; gap: 64px; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; margin: 0; }
+h1 { font-size: var(--step-3); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: var(--step-2); font-weight: 700; }
+h3 { font-size: var(--step-1); font-weight: 600; }
+p { margin: 0; max-width: 65ch; }
+code, .mono { font-family: var(--font-mono); font-size: 0.9em; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: var(--step--1); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent); font-weight: 600;
+}
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* header */
+header { display: grid; gap: 16px; }
+header .lede { font-size: var(--step-1); color: var(--ink); max-width: 46ch; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 28px; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.fact { display: grid; gap: 0; }
+.fact b { font-family: var(--font-mono); font-size: var(--step-1); font-weight: 600; font-variant-numeric: tabular-nums; }
+.fact span { color: var(--muted); font-size: var(--step--1); }
+
+/* video sections */
+.reel { display: grid; gap: 16px; }
+.reel-head { display: grid; gap: 8px; }
+.reel-head p { color: var(--muted); }
+.monitor { background: var(--screen); border-radius: 10px; padding: 8px; }
+.monitor video { display: block; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; background: #000; }
+.chapters { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.chapters button {
+  font: inherit; font-size: var(--step--1); display: inline-flex; align-items: baseline; gap: 8px; cursor: pointer;
+  border: 1px solid var(--rule); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 4px 12px;
+}
+.chapters button:hover { border-color: var(--accent); }
+.chapters button[aria-current="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.chapters .t { font-family: var(--font-mono); font-variant-numeric: tabular-nums; opacity: 0.75; }
+.chapters .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; align-self: center; }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+.legend { color: var(--muted); font-size: var(--step--1); display: flex; flex-wrap: wrap; gap: 16px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+/* sections */
+section.ref { display: grid; gap: 20px; }
+section.ref > p { color: var(--muted); }
+.pipeline { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 16px; }
+.parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 32px; }
+.part { display: grid; gap: 4px; padding-block: 16px; border-top: 1px solid var(--rule); min-width: 0; }
+.part .path { font-family: var(--font-mono); font-size: var(--step--1); color: var(--muted); overflow-wrap: anywhere; }
+.part p { font-size: 0.95rem; }
+.tag { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--font-mono); font-size: var(--step--1); letter-spacing: 0.04em; color: var(--muted); font-weight: 500; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.note { color: var(--muted); font-size: var(--step--1); }
+.lessons { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; max-width: 75ch; }
+.lessons li { padding-left: 20px; position: relative; }
+.lessons li::before { content: ""; position: absolute; left: 0; top: 0.7em; width: 8px; height: 2px; background: var(--accent); }
+.lessons b { font-weight: 600; }
+pre {
+  margin: 0; overflow-x: auto; background: var(--screen); color: #d8e3de; border-radius: 10px; padding: 16px;
+  font-family: var(--font-mono); font-size: var(--step--1); line-height: 1.6;
+}
+pre .c { color: #7f948c; }
+.media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.media-grid figure { margin: 0; display: grid; gap: 6px; }
+.media-grid img, .media-grid video { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--screen); display: block; }
+.media-grid figcaption { color: var(--muted); font-size: var(--step--1); }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+footer { color: var(--muted); font-size: var(--step--1); border-top: 1px solid var(--rule); padding-top: 16px; }
+@media (max-width: 560px) {
+  h1 { font-size: 2rem; }
+  .wrap { padding-block: 32px 48px; gap: 48px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Isaac Lab-Arena · Unitree G1 · WBC + PINK IK</span>
+    <h1>G1 Data Factory</h1>
+    <p class="lede">XR 헤드셋 없이 휴머노이드의 “걸어가서 집어 옮기기” 시연 데이터를 만드는 도구 모음입니다. 사람이 키보드로 조종하거나, 스크립트 전문가가 혼자 수행하면서 성공한 에피소드만 저장합니다.</p>
+    <div class="facts">
+      <div class="fact"><b>23-D</b><span>XR 텔레옵과 같은 액션</span></div>
+      <div class="fact"><b>10</b><span>RoboCasa 주방 스타일</span></div>
+      <div class="fact"><b>2</b><span>수집 방식: 키보드, 자동</span></div>
+      <div class="fact"><b>HDF5</b><span>Isaac Lab record_demos와 같은 형식</span></div>
+    </div>
+  </header>
+
+  <section class="reel" id="intro" aria-labelledby="intro-title">
+    <div class="reel-head">
+      <span class="eyebrow">영상 1 · 1분 6초</span>
+      <h2 id="intro-title">환경 소개</h2>
+      <p>Arena에 원래 있던 G1 장면은 창고 하나였습니다. 여기에 G1용 주방 환경(10개 스타일, 여러 종류의 물체)과 헤드셋 없이 쓰는 키보드 텔레옵을 더했습니다. 주방 구간은 카메라가 로봇 주위를 한 번 도는 동안 10개 스타일이 차례로 바뀝니다. 창고와 텔레옵 구간의 왼쪽 아래 작은 화면은 실제로 녹화되는 로봇 머리 카메라입니다.</p>
+    </div>
+    <div class="monitor"><video id="v-intro" controls playsinline preload="metadata" poster="videos/g1_env_intro_poster.jpg" src="videos/g1_env_intro.mp4"></video></div>
+    <ul class="chapters" data-video="v-intro" data-src="chapters-intro"></ul>
+  </section>
+
+  <section class="reel" id="auto" aria-labelledby="auto-title">
+    <div class="reel-head">
+      <span class="eyebrow" id="auto-eyebrow">영상 2 · 1분 47초</span>
+      <h2 id="auto-title">자동 데이터 생성</h2>
+      <p>사람은 집을 물체와 놓을 곳만 정합니다. 물체는 Objaverse에서 카테고리로 바로 받아 올 수도 있고(물병, 오리 장난감, 머그), 놓을 곳은 그릇·서빙 볼·문 열린 토스터 오븐 등 어떤 물체든 <code>--destination</code>으로 지정합니다. 시뮬레이터 안에는 고른 물체 위에 파란 화살표, 놓을 곳 위에 초록 화살표가 떠 있다가, 쥐거나 놓으면 사라집니다. 그다음 스크립트 전문가가 시뮬레이터의 정답 상태를 읽고 같은 23차원 액션을 내며, 성공한 에피소드만 HDF5에 저장합니다. 물체마다 성공한 에피소드 하나씩만 넣었고, 동작 구간은 빠르게 재생됩니다.</p>
+    </div>
+    <div class="monitor"><video id="v-auto" controls playsinline preload="metadata" poster="videos/g1_auto_data_poster.jpg" src="videos/g1_auto_data.mp4"></video></div>
+    <ul class="chapters" data-video="v-auto" data-src="chapters-auto"></ul>
+    <div class="legend"><span><i class="dot ok"></i>성공, 저장됨</span></div>
+  </section>
+
+  <section class="reel" id="grasp" aria-labelledby="grasp-title">
+    <div class="reel-head">
+      <span class="eyebrow">영상 3 · 40초</span>
+      <h2 id="grasp-title">그립 자세는 이렇게 고릅니다</h2>
+      <p>주방에서 머그(Objaverse)를 집은 실제 에피소드 하나를 기록해서, 그때 그립 플래너가 받은 입력으로 계산을 다시 돌려 단계마다 그렸습니다. 이 에피소드에서는 후보 2,088개를 검사해 414개가 접촉 조건을 통과했고, 조리대에 손이 닿는 144개와 방향이 맞지 않는 감싸 쥐기 53개를 빼면 217개가 남고, 그중 점수 상위 8개를 cuRobo에 차례로 넘깁니다. 이번에는 1순위 후보에서 바로 충돌 없는 팔 경로가 나왔고, 마지막 구간은 그 자세(노란 상자)를 Isaac Sim에서 실제로 실행한 장면입니다.</p>
+    </div>
+    <div class="monitor"><video id="v-grasp" controls playsinline preload="metadata" poster="videos/g1_grasp_steps_poster.jpg" src="videos/g1_grasp_steps.mp4"></video></div>
+    <ul class="chapters" data-video="v-grasp" data-src="chapters-grasp"></ul>
+  </section>
+
+  <section class="ref" aria-labelledby="flow-title">
+    <span class="eyebrow">데이터 흐름</span>
+    <h2 id="flow-title">사람이 조종해도, 전문가가 수행해도 같은 데이터</h2>
+    <p>두 수집 방식 모두 Arena의 G1 액션 항(<code>G1DecoupledWBCPinkAction</code>)이 받는 23차원 액션을 냅니다. 그래서 녹화 파일은 XR로 모은 시연과 형식이 같습니다. Mimic 증강부터 GR00T 학습까지는 Arena의 기존 단계이고, 이 데이터로는 아직 돌려 보지 않았습니다.</p>
+    <div class="pipeline">
+<pre class="mermaid">
+flowchart LR
+  K["키보드 텔레옵<br/>g1_keyboard"] --> A["23-D 액션<br/>손 · 손목 자세 · 보행 · 골반 높이"]
+  E["자동 시연기<br/>상태 기계 + cuRobo + 그립 플래너"] --> A
+  A --> G["G1<br/>WBC 다리 + PINK IK 팔"]
+  G --> R["record_policy_demos<br/>성공 에피소드만"]
+  R --> H[("HDF5")]
+  H --> M["Mimic 증강"] --> L["LeRobot 변환"] --> T["GR00T 파인튜닝"]
+</pre>
+    </div>
+  </section>
+
+  <section class="ref" aria-labelledby="parts-title">
+    <span class="eyebrow">추가한 것</span>
+    <h2 id="parts-title">새 구성요소</h2>
+    <div class="parts">
+      <div class="part"><span class="tag">수집</span><h3>키보드 텔레옵</h3><p>WASD로 걷고, 방향키와 T/G로 손목을 옮기고, K로 쥡니다. 양팔을 고르면 ←/→로 두 손을 대칭으로 조여 상자를 끼울 수 있습니다. 시작하면 쓸 수 있는 장면 목록을 터미널에 보여줍니다.</p><span class="path">isaaclab_arena_g1/teleop/g1_keyboard_locomanip.py</span></div>
+      <div class="part"><span class="tag">환경</span><h3>G1 주방 픽앤플레이스</h3><p>Lightwheel RoboCasa one_wall 주방 10개 스타일에 G1과 집어 옮기기 과제를 조립한 Arena 환경입니다. 물체와 목적지는 Arena의 관계 기반 배치 솔버로 놓아서, 스타일마다 조리대 위치가 달라도 자동으로 맞고 리셋마다 위치와 방향이 조금씩 바뀝니다. 목적지는 같은 조리대, 바닥 통, 문 열린 토스터 오븐 중에서 고릅니다. 배치 방식은 아래 “관계 기반 배치”에 정리했습니다.</p><span class="path">isaaclab_arena_environments/g1_kitchen_pick_and_place_environment.py</span></div>
+      <div class="part"><span class="tag">자동 수집</span><h3>스크립트 전문가</h3><p>단계마다 목표를 다시 계획하는 상태 기계로, 양손 상자 옮기기와 한 손 집기가 있습니다. 동작은 최소 저크 궤적으로 움직이고, 물체를 넘어뜨리면 감지해서 다시 시도합니다.</p><span class="path">isaaclab_arena_g1/policy/g1_scripted_expert_base.py</span></div>
+      <div class="part"><span class="tag">계획</span><h3>cuRobo 팔 모션 플래너</h3><p>G1 URDF로 충돌 구 모델을 만들어 조리대와 물체를 피하는 팔 궤적을 계획합니다. 결과를 다시 손목 목표로 바꾸므로 텔레옵 데이터와 형식이 같습니다.</p><span class="path">isaaclab_arena_g1/policy/g1_curobo_arm_planner.py</span></div>
+      <div class="part"><span class="tag">계획</span><h3>메시 기반 그립 플래너</h3><p>Dex3 손을 2지 그리퍼로 보고, 물체 메시에서 마주 보는 두 접촉점을 찾아 잡는 자세와 손바닥으로 감싸 쥐는 자세 후보를 만듭니다. 마찰 원뿔, 손 너비, 조리대와의 간격으로 거릅니다.</p><span class="path">isaaclab_arena_g1/policy/g1_grasp_planner.py</span></div>
+      <div class="part"><span class="tag">물체</span><h3>Objaverse 가져오기</h3><p>카테고리를 고르면 물체를 받아 크기를 맞추고, 강체·충돌 메시·마찰을 붙인 USD로 바꿔 Arena 물체 이름으로 등록합니다.</p><span class="path">isaaclab_arena_g1/tools/objaverse_import.py</span></div>
+      <div class="part"><span class="tag">녹화</span><h3>성공 시연 녹화기</h3><p>어떤 Arena 정책이든 돌려서 성공한 에피소드만 Isaac Lab <code>record_demos</code>와 같은 HDF5 형식으로 저장합니다. 정책이 포기하면 그 시도를 바로 끊습니다.</p><span class="path">isaaclab_arena/scripts/record_policy_demos.py</span></div>
+      <div class="part"><span class="tag">평가</span><h3>일반화 실험 설정</h3><p>주방 10개 스타일과 물체 5종을 한 번에 평가합니다. 정책만 바꾸면 학습한 정책도 같은 조건으로 비교할 수 있습니다.</p><span class="path">experiment_configs/g1_kitchen_generalization_scripted_experiment.yaml</span></div>
+    </div>
+  </section>
+
+  <section class="ref" aria-labelledby="placement-title">
+    <span class="eyebrow">Arena 기능 · 관계 기반 배치</span>
+    <h2 id="placement-title">좌표 대신 관계로 물체를 놓습니다</h2>
+    <p>Arena에서는 물체 위치를 좌표로 하나하나 적는 대신 “조리대 위에”, “그릇 옆에” 같은 관계로 적습니다. 솔버가 물체 크기와 충돌, 과제 조건을 보고 그 관계를 만족하는 배치를 찾아 검증하고, 리셋마다 새 배치를 뽑습니다.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>관계</th><th>뜻</th><th>우리 주방에서</th></tr></thead>
+        <tbody>
+          <tr><td><code>IsAnchor</code></td><td>움직이지 않는 기준</td><td>조리대 상판, 바닥</td></tr>
+          <tr><td><code>On</code></td><td>무엇의 위에</td><td>물체·그릇은 조리대 위, 통은 바닥 위</td></tr>
+          <tr><td><code>AtPosition</code></td><td>정해진 위치</td><td>조리대 왼쪽 끝에서 잰 위치라서 스타일마다 자동으로 맞음</td></tr>
+          <tr><td><code>RandomAroundSolution</code> · <code>RotateAroundSolution</code></td><td>리셋마다 주변으로 흔들기, 방향 돌리기</td><td>물체 ±3 cm·±15°, 그릇 ±2 cm, 토스터 오븐 방향</td></tr>
+          <tr><td><code>PositionLimitsBox</code></td><td>이 상자 영역 안 아무 데나</td><td>이렇게도 가능: 팔이 닿는 조리대 앞쪽 띠 안 어디든</td></tr>
+          <tr><td><code>NextTo</code> · <code>NotNextTo</code> · <code>FaceTo</code></td><td>옆에 / 떨어져서 / 마주 보게</td><td>이렇게도 가능: 그릇은 물체 오른쪽 15 cm, 방해물은 물체에서 떨어지게</td></tr>
+          <tr><td><code>ClutterOn</code></td><td>지지면 위로 흩뿌려 떨어뜨리고 안착시키기</td><td>이렇게도 가능: 조리대 위 방해물 몇 개로 난이도 올리기</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="media-grid">
+      <figure><img src="media/adaptive_object_placement.gif" alt="물체를 하나씩 더할 때마다 배치가 다시 계산되는 테이블 장면" loading="lazy"><figcaption>물체를 더하면 크기에 맞춰 배치를 다시 풉니다. 좌표는 손대지 않습니다.</figcaption></figure>
+      <figure><video src="media/bagels_on_plate_web.mp4" autoplay loop muted playsinline preload="none" aria-label="베이글, 바나나, 접시, 그릇이 관계에 따라 테이블 위에 배치되는 예"></video><figcaption>“테이블 위”, “접시 옆” 같은 관계만으로 만든 배치입니다.</figcaption></figure>
+      <figure><div class="pair"><img src="media/clutter_release.png" alt="망치와 클램프가 테이블 위 공중에 놓인 배치" loading="lazy"><img src="media/clutter_settled.png" alt="같은 물체들이 테이블에 떨어져 안착한 모습" loading="lazy"></div><figcaption><code>ClutterOn</code>: 공중에 흩뿌린 뒤(왼쪽) 물리로 안착시키고(오른쪽), 통과한 배치만 파일로 저장해 그대로 재생합니다.</figcaption></figure>
+    </div>
+    <p>배치를 파일로 저장하고 다시 불러올 수도 있어서(<code>--placement_layouts</code>), 챌린지 참가자 모두를 똑같은 배치 세트로 평가할 수 있습니다. 위 영상과 이미지는 Isaac Lab-Arena 공식 문서의 예시입니다(<a href="https://isaac-sim.github.io/IsaacLab-Arena/release/0.3.0/pages/gallery/index.html">갤러리</a>, <a href="https://isaac-sim.github.io/IsaacLab-Arena/release/0.3.0/pages/concepts/object_placement/relations.html">관계 문서</a>).</p>
+  </section>
+
+  <section class="ref" aria-labelledby="results-title">
+    <span class="eyebrow">측정 결과</span>
+    <h2 id="results-title">자동 시연기 성공률</h2>
+    <p>Isaac Sim 6.0 물리에서 <code>policy_runner</code>와 녹화기로 잰 값입니다. 시도 수가 작아서 경향을 보는 용도입니다.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>과제</th><th>조건</th><th>성공 / 시도</th></tr></thead>
+        <tbody id="results-body">
+          <tr><td>창고 상자 양손 옮기기</td><td>공식 Galileo 장면</td><td class="num">3 / 3 · 녹화 2 / 2</td></tr>
+          <tr><td>주방 한 손 집기</td><td>one_wall 10개 스타일, 다시 시도 포함</td><td class="num">19 / 30</td></tr>
+          <tr><td>주방 물체별</td><td>farmhouse1: 케첩 2/3 · 머스터드 1/3 · 바비큐 3/3 · 마요 2/3 · 수프 캔 3/3</td><td class="num">11 / 15</td></tr>
+          <tr><td>cuRobo 팔 계획 켬</td><td>주방 한 손 집기, 계획 실패 0회</td><td class="num">4 / 6</td></tr>
+          <tr><td>그립 플래너 + Objaverse</td><td>farmhouse1: 랜치 2/4 · 머그 2/4 · 사과 3/4 · 레몬 0/4 · 요거트 1/4 · 바나나 1/2 · 찻잔 1/2</td><td class="num">10 / 24</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" id="video-tally">영상 2는 물체마다 처음 성공한 에피소드 하나씩만 넣었습니다. 케첩과 창고 상자는 처음 촬영한 영상(화살표 없음)의 성공 에피소드를 그대로 썼고, 나머지 넷은 새로 찍어 모두 첫 시도에 성공했습니다. Objaverse 배는 작은 접시로 바꿔도 네 번 모두 실패해서 뺐습니다(조리대 앞에서 자리를 못 잡거나 쥐다가 넘어뜨림).</p>
+  </section>
+
+  <section class="ref" aria-labelledby="lessons-title">
+    <span class="eyebrow">실제 물리에서 배운 것</span>
+    <h2 id="lessons-title">기구학 검증에서는 안 보였던 것</h2>
+    <ul class="lessons">
+      <li><b>팔이 IK 목표보다 4–6 cm 처지고 손목이 약 10° 숙여집니다.</b> 그래서 손이 선반 모서리에 걸려 양손 과제 성공률이 0%였고, 빈손으로 걸을 때 손을 8 cm 올려 3/3이 됐습니다.</li>
+      <li><b>손이 조리대 높이에 있으면 몸이 조리대에 붙지 못합니다.</b> 손을 상판 위로 올려야 물체가 팔 닿는 거리에 들어옵니다.</li>
+      <li><b>손가락 마찰을 높이면 처진 손끝이 조리대에 끌립니다.</b> 그 힘에 몸이 10–20° 돌아가서, 손목을 20° 들어 해결했습니다.</li>
+      <li><b>WBC는 골반 0.43 m까지 안정적으로 앉습니다.</b> 그래도 손끝은 바닥 위 0.20 m까지만 내려가서, 바닥에는 높이 15 cm 이상인 통으로만 놓을 수 있습니다.</li>
+    </ul>
+  </section>
+
+  <section class="ref" aria-labelledby="run-title">
+    <span class="eyebrow">재현</span>
+    <h2 id="run-title">직접 돌려 보기</h2>
+<pre><span class="c"># 키보드로 조종 (창이 뜨면 터미널에 쓸 수 있는 장면 목록이 나옵니다)</span>
+python submodules/IsaacLab/scripts/environments/teleoperation/teleop_se3_agent.py \
+  --viz kit --device cpu \
+  --external_callback isaaclab_arena.environments.isaaclab_interop.environment_registration_callback \
+  --task g1_kitchen_pick_and_place --teleop_device g1_keyboard
+
+<span class="c"># 자동 시연기로 성공 시연 50개 녹화</span>
+python isaaclab_arena/scripts/record_policy_demos.py --device cpu --enable_cameras \
+  --policy_type isaaclab_arena_g1.policy.g1_scripted_one_hand_pick_and_place_policy.G1ScriptedOneHandPickAndPlacePolicy \
+  --dataset_file ~/datasets/g1_kitchen.hdf5 --num_demos 50 \
+  g1_kitchen_pick_and_place --kitchen_background lightwheel_kitchen_one_wall_modern1</pre>
+  </section>
+
+  <footer>Isaac Lab-Arena (Isaac Sim 6.0, Isaac Lab 3.0) 위에서 만들었습니다. 영상은 모두 RTX 3090 한 장에서 헤드리스로 렌더링했고, 자막, 배속, 구간 자르기 외에는 편집하지 않았습니다.</footer>
+</div>
+
+<script type="application/json" id="chapters-intro">[{"t": 0.0, "label": "시작"}, {"t": 3.52, "label": "기존: 창고 장면"}, {"t": 11.12, "label": "추가: 주방 10종"}, {"t": 45.08, "label": "추가: 키보드 텔레옵"}]</script>
+<script type="application/json" id="chapters-grasp">[{"t": 0.0, "label": "장면"}, {"t": 2.48, "label": "물체 메시"}, {"t": 5.48, "label": "볼록 껍질"}, {"t": 8.48, "label": "후보 샘플링"}, {"t": 12.48, "label": "마주 보는 접촉점 검사"}, {"t": 17.48, "label": "감싸 쥐기 검사"}, {"t": 20.48, "label": "충돌·방향 필터"}, {"t": 24.48, "label": "순위"}, {"t": 28.48, "label": "cuRobo 사전 자세 경로"}, {"t": 33.48, "label": "Isaac Sim에서 실행"}]</script>
+<script type="application/json" id="chapters-auto">[{"t": 0.0, "label": "개요"}, {"t": 4.0, "label": "케첩 → 그릇", "outcome": "success"}, {"t": 19.96, "label": "수프 캔 → 토스터 오븐", "outcome": "success"}, {"t": 35.92, "label": "Objaverse 머그 → 서빙 볼", "outcome": "success"}, {"t": 54.04, "label": "Objaverse 물병 → 그릇", "outcome": "success"}, {"t": 72.32, "label": "Objaverse 오리 → 나무 그릇", "outcome": "success"}, {"t": 90.4, "label": "창고 · 양손 상자", "outcome": "success"}, {"t": 103.0, "label": "저장 형식"}]</script>
+<script>
+(function () {
+  function fmt(t) {
+    var m = Math.floor(t / 60), s = Math.floor(t % 60);
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+  document.querySelectorAll(".chapters").forEach(function (list) {
+    var video = document.getElementById(list.dataset.video);
+    var data = [];
+    try { data = JSON.parse(document.getElementById(list.dataset.src).textContent); } catch (e) { data = []; }
+    var buttons = data.map(function (ch, i) {
+      var li = document.createElement("li");
+      var b = document.createElement("button");
+      b.type = "button";
+      b.id = list.dataset.video + "-ch-" + i;
+      var t = document.createElement("span"); t.className = "t"; t.textContent = fmt(ch.t);
+      b.appendChild(t);
+      if (ch.outcome) {
+        var d = document.createElement("i"); d.className = "dot " + (ch.outcome === "success" ? "ok" : "bad");
+        d.setAttribute("aria-hidden", "true");
+        b.appendChild(d);
+      }
+      b.appendChild(document.createTextNode(ch.label));
+      b.addEventListener("click", function () {
+        video.currentTime = ch.t + 0.05;
+        var p = video.play(); if (p && p.catch) p.catch(function () {});
+      });
+      li.appendChild(b); list.appendChild(li);
+      return b;
+    });
+    video.addEventListener("timeupdate", function () {
+      var cur = -1;
+      data.forEach(function (ch, i) { if (video.currentTime >= ch.t) cur = i; });
+      buttons.forEach(function (b, i) { b.setAttribute("aria-current", i === cur ? "true" : "false"); });
+    });
+  });
+})();
+</script>

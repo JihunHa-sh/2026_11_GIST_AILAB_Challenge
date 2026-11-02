@@ -1,0 +1,12 @@
+# Copyright (c) 2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+team_name: JihunHa
+high_level:
+  class: isaaclab_arena_g1.challenge.policies.JihunHa.high_level.JihunHaHighLevel
+  options: {}
+low_level:
+  class: default
+  options: {}

@@ -1,0 +1,13 @@
+# Copyright (c) 2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Baseline: the scripted high level with the built-in low level (walking policy + arm IK).
+team_name: baseline
+high_level:
+  class: isaaclab_arena_g1.challenge.high_level.baseline.BaselineHighLevel
+  options: {}
+low_level:
+  class: default
+  options: {}

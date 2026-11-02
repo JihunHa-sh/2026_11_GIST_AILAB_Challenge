@@ -1,0 +1,42 @@
+# Copyright (c) 2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An Arena Experiment with shared values and four named Runs.
+# Values under shared are used by every Run below.
+# A Run only needs to list what is different; its values override the shared ones.
+# To change a shared value on the command line:
+# - with experiment_runner.py, use shared.<path>=<value>
+# - with osmo/submit_arena_experiment.py, use experiment_cfg.shared.<path>=<value>
+# A value written directly in a Run still takes priority.
+shared:
+  environment:
+    type: pick_and_place_maple_table
+    embodiment: droid_rel_joint_pos
+    pick_up_object: rubiks_cube_hot3d_robolab
+    destination_location: bowl_ycb_robolab
+    hdr: home_office_robolab
+    # Short demo timeout in simulated time, not wall-clock time.
+    episode_length_s: 1.5
+  policy:
+    type: zero_action
+  rollout_limit:
+    num_episodes: 1
+
+runs:
+  baseline: {}
+
+  swap_objects:
+    environment:
+      pick_up_object: mustard_bottle_hot3d_robolab
+      destination_location: wooden_bowl_hot3d_robolab
+
+  change_background_hdr:
+    environment:
+      hdr: billiard_hall_robolab
+
+  parallel_envs:
+    environment_builder:
+      num_envs: 64
+      env_spacing: 2.5

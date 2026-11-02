@@ -1,0 +1,133 @@
+# Copyright (c) 2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from isaaclab_arena.assets.register import register_environment
+from isaaclab_arena.environments.arena_environment_factory import ArenaEnvironmentCfg, ArenaEnvironmentFactory
+
+if TYPE_CHECKING:
+    from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
+
+
+@dataclass
+class FrankaPutAndCloseDoorEnvironmentCfg(ArenaEnvironmentCfg):
+    """Configure the Franka put-and-close-door environment."""
+
+    object: str = "dex_cube"
+    embodiment: str = "franka_ik"
+    teleop_device: str | None = None
+
+
+@register_environment
+class FrankaPutAndCloseDoorEnvironment(ArenaEnvironmentFactory[FrankaPutAndCloseDoorEnvironmentCfg]):
+    """
+    A sequential task environment with two subtasks:
+    1. Pick and place object into the microwave
+    2. Close the microwave door
+    The microwave starts open, the robot places the object inside, then closes it.
+    """
+
+    name = "franka_put_and_close_door"
+    _legacy_argparse_cfg_type = FrankaPutAndCloseDoorEnvironmentCfg
+
+    def build(self, cfg: FrankaPutAndCloseDoorEnvironmentCfg) -> IsaacLabArenaEnvironment:
+        """Build the environment from its typed configuration."""
+        from isaaclab_arena.assets.object_reference import ObjectReference
+        from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
+        from isaaclab_arena.scene.scene import Scene
+        from isaaclab_arena.tasks.close_door_task import CloseDoorTask
+        from isaaclab_arena.tasks.pick_and_place_task import PickAndPlaceTask
+        from isaaclab_arena.tasks.sequential_composite_tasks.franka_put_and_close_door_task import (
+            FrankaPutAndCloseDoorTask,
+        )
+        from isaaclab_arena.utils.pose import Pose, PoseRange
+
+        # Get assets
+        background = self.asset_registry.get_asset_by_name("kitchen")()
+        container = self.asset_registry.get_asset_by_name("microwave")()
+        pick_object = self.asset_registry.get_asset_by_name(cfg.object)()
+        embodiment = self.asset_registry.get_asset_by_name(cfg.embodiment)(enable_cameras=cfg.enable_cameras)
+
+        if cfg.teleop_device is not None:
+            teleop_device = self.device_registry.get_device_by_name(cfg.teleop_device)()
+        else:
+            teleop_device = None
+
+        # Set initial poses
+        container.set_initial_pose(
+            Pose(
+                position_xyz=(0.4, -0.00586, 0.22773),
+                rotation_xyzw=(0, 0, -0.7071068, 0.7071068),
+            )
+        )
+
+        pick_object.set_initial_pose(
+            PoseRange(
+                position_xyz_min=(0.15, -0.337, 0.154),
+                position_xyz_max=(0.3, -0.637, 0.154),
+                rpy_min=(-1.5707963, 0.0, -1.5707963),
+                rpy_max=(-1.5707963, 0.0, -1.5707963),
+            )
+        )
+
+        embodiment.set_initial_pose(
+            Pose(
+                position_xyz=(-0.3, 0.0, -0.5),
+                rotation_xyzw=(0.0, 0.0, 0.0, 1.0),
+            )
+        )
+
+        if cfg.embodiment == "franka_ik":
+            # Set Franka arm pose for kitchen setup
+            embodiment.set_initial_joint_pose([0.0, -1.309, 0.0, -2.793, 0.0, 3.037, 0.740, 0.04, 0.04])
+
+        # The microwave articulation owns the turntable body's physics and reset state.
+        # This read-only reference exposes its pose and geometry to the task.
+        destination_ref = ObjectReference(
+            name="microwave_disc",
+            parent_asset=container,
+            prim_path="{ENV_REGEX_NS}/microwave/Microwave039_Disc001",
+        )
+
+        # Task descriptions
+        task_description_pick = "Pick the object and place it into the microwave."
+        task_description_close = "Close the microwave door."
+
+        # Create scene
+        scene = Scene(assets=[background, container, pick_object, destination_ref])
+
+        # Create close door task
+        close_door_task = CloseDoorTask(
+            openable_object=container,
+            closedness_threshold=0.05,
+            reset_openness=0.9,
+            task_description=task_description_close,
+        )
+
+        # Create pick and place task
+        pick_and_place_task = PickAndPlaceTask(
+            pick_up_object=pick_object,
+            destination_object=container,
+            destination_location=destination_ref,
+            background_scene=background,
+            task_description=task_description_pick,
+        )
+
+        sequential_task = FrankaPutAndCloseDoorTask(
+            subtasks=[pick_and_place_task, close_door_task], openable_object=container
+        )
+
+        isaaclab_arena_environment = IsaacLabArenaEnvironment(
+            name=self.name,
+            embodiment=embodiment,
+            scene=scene,
+            task=sequential_task,
+            teleop_device=teleop_device,
+        )
+        return isaaclab_arena_environment

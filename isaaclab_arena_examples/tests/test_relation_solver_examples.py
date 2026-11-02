@@ -1,0 +1,50 @@
+# Copyright (c) 2025-2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Smoke tests for relation solver example scripts.
+
+These tests simply verify the examples run without crashing.
+"""
+
+import matplotlib
+
+# Use non-interactive backend so plt.show() is a no-op
+matplotlib.use("Agg")
+
+
+def test_dummy_object_placer_notebook_runs():
+    """Smoke test: verify the dummy object placer notebook runs without errors."""
+    from isaaclab_arena_examples.relations.dummy_object_placer_notebook import run_dummy_object_placer_demo
+
+    run_dummy_object_placer_demo()
+
+
+def test_isaac_sim_object_placer_smoke():
+    """Smoke test: verify the Isaac Sim object placer notebook runs without errors."""
+    from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
+    from isaaclab_arena_examples.relations.isaac_sim_object_placer_notebook import smoke_test_isaac_sim_object_placer
+
+    result = run_function_with_persistent_simulation_app(smoke_test_isaac_sim_object_placer)
+    assert result, "Isaac Sim object placer smoke test failed"
+
+
+def test_isaac_sim_no_collision_smoke():
+    """Smoke test: verify the Isaac Sim no-overlap notebook runs without errors."""
+    from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
+    from isaaclab_arena_examples.relations.isaac_sim_no_collision_notebook import smoke_test_isaac_sim_no_collision
+
+    result = run_function_with_persistent_simulation_app(smoke_test_isaac_sim_no_collision)
+    assert result, "Isaac Sim no-overlap smoke test failed"
+
+
+def test_isaac_sim_kitchen_background_collision_smoke():
+    """Smoke test: verify the kitchen background-collision notebook runs without errors."""
+    from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
+    from isaaclab_arena_examples.relations.isaac_sim_kitchen_background_collision_notebook import (
+        smoke_test_kitchen_background_collision,
+    )
+
+    result = run_function_with_persistent_simulation_app(smoke_test_kitchen_background_collision)
+    assert result, "Kitchen background-collision smoke test failed"

@@ -1,0 +1,9 @@
+# Rendered media and intermediate files stay out of git.
+*.mp4
+*.jpg
+*.png
+clips/*.json
+segments/
+logs/
+probe/
+__pycache__/

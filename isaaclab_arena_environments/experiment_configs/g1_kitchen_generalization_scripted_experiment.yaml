@@ -1,0 +1,81 @@
+# Copyright (c) 2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kitchen generalization of the scripted one-hand G1 expert: one Run per Lightwheel one-wall kitchen style
+# (same task, different furniture and counter position), plus Runs with other objects in one kitchen.
+# Object and bowl positions are randomized at every reset by the environment.
+#
+#   python isaaclab_arena/evaluation/experiment_runner.py --device cpu \
+#     --experiment_config isaaclab_arena_environments/experiment_configs/g1_kitchen_generalization_scripted_experiment.yaml
+#
+# Swap shared.policy for another G1 policy to score it on the same Runs.
+shared:
+  environment:
+    type: g1_kitchen_pick_and_place
+    embodiment: g1_wbc_pink
+    object: ranch_dressing_hope_robolab
+  policy:
+    type: isaaclab_arena_g1.policy.g1_scripted_one_hand_pick_and_place_policy.G1ScriptedOneHandPickAndPlacePolicy
+    pick_up_object_name: ranch_dressing_hope_robolab
+  rollout_limit:
+    num_episodes: 3
+
+runs:
+  style_coastal:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_coastal
+  style_farmhouse1:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_farmhouse1
+  style_industrial:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_industrial
+  style_mediterranean:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_mediterranean
+  style_modern1:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_modern1
+  style_modern2:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_modern2
+  style_rustic:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_rustic
+  style_scandinavian:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_scandinavian
+  style_traditional:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_traditional
+  style_farmhouse2:
+    environment:
+      kitchen_background: lightwheel_kitchen_one_wall_farmhouse2
+
+  object_ketchup:
+    environment:
+      object: ketchup_bottle_hope_robolab
+    policy:
+      pick_up_object_name: ketchup_bottle_hope_robolab
+  object_mustard:
+    environment:
+      object: mustard_bottle_hope_robolab
+    policy:
+      pick_up_object_name: mustard_bottle_hope_robolab
+  object_bbq_sauce:
+    environment:
+      object: bbq_sauce_bottle_hope_robolab
+    policy:
+      pick_up_object_name: bbq_sauce_bottle_hope_robolab
+  object_mayonnaise:
+    environment:
+      object: mayonnaise_bottle_hope_robolab
+    policy:
+      pick_up_object_name: mayonnaise_bottle_hope_robolab
+  object_soup_can:
+    environment:
+      object: alphabet_soup_can_hope_robolab
+    policy:
+      pick_up_object_name: alphabet_soup_can_hope_robolab

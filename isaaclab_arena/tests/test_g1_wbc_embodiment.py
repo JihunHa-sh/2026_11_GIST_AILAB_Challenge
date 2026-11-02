@@ -1,0 +1,182 @@
+# Copyright (c) 2025-2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+import numpy as np
+import torch
+import tqdm
+import traceback
+
+import pytest
+import warp as wp
+
+from isaaclab_arena.tests.utils.persistent_simulation_app import run_function_with_persistent_simulation_app
+
+NUM_STEPS = 10
+HEADLESS = True
+ENABLE_CAMERAS = True
+STANDING_POSITION_XY_EPS = 1e-1
+# Wrist quaternions in xyzw (identity-like: x, y, z, w)
+WBC_PINK_IDLE_ACTION = [
+    0.0,  # left_hand_state
+    0.0,  # right_hand_state
+    0.201,
+    0.145,
+    0.101,  # left_wrist_pos
+    0.010,
+    -0.008,
+    -0.011,
+    1.000,  # left_wrist_quat (xyzw)
+    0.201,
+    -0.145,
+    0.101,  # right_wrist_pos
+    -0.010,
+    -0.008,
+    -0.011,
+    1.000,  # right_wrist_quat (xyzw)
+    0.0,
+    0.0,
+    0.0,  # navigate_cmd
+    0.75,  # base_height_cmd
+    0.0,
+    0.0,
+    0.0,  # torso_orientation_rpy_cmd
+]
+
+
+def get_test_environment(num_envs: int, pink_ik_enabled: bool):
+    """Returns a scene which we use for these tests."""
+
+    from isaaclab_arena.assets.registries import AssetRegistry
+    from isaaclab_arena.cli.isaaclab_arena_cli import arena_env_builder_cfg_from_argparse, get_isaaclab_arena_cli_parser
+    from isaaclab_arena.embodiments.g1.g1 import G1WBCJointEmbodiment, G1WBCPinkEmbodiment
+    from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
+    from isaaclab_arena.environments.isaaclab_arena_environment import IsaacLabArenaEnvironment
+    from isaaclab_arena.environments.isaaclab_arena_manager_based_env_cfg import set_control_rate_50hz
+    from isaaclab_arena.scene.scene import Scene
+    from isaaclab_arena.utils.pose import Pose
+
+    asset_registry = AssetRegistry()
+    background = asset_registry.get_asset_by_name("kitchen")()
+
+    scene = Scene(assets=[background])
+    if pink_ik_enabled:
+        embodiment = G1WBCPinkEmbodiment(enable_cameras=ENABLE_CAMERAS)
+    else:
+        embodiment = G1WBCJointEmbodiment(enable_cameras=ENABLE_CAMERAS)
+    # NOTE(xinjieyao, 2025.09.22): Set initial pose such that robot will not drop to the ground, causing WBC unstable.
+    robot_init_base_pose = np.array([0, 0, 0])
+    embodiment.set_initial_pose(Pose(position_xyz=tuple(robot_init_base_pose), rotation_xyzw=(0.0, 0.0, 0.0, 1.0)))
+
+    isaaclab_arena_environment = IsaacLabArenaEnvironment(
+        name="g1_standing_test",
+        embodiment=embodiment,
+        scene=scene,
+        # The whole-body controller requires 50 Hz control; at the 15 Hz default the standing
+        # policy drifts off its initial position.
+        env_cfg_callback=set_control_rate_50hz,
+    )
+
+    args_cli = get_isaaclab_arena_cli_parser().parse_args([])
+    env_builder = ArenaEnvBuilder(isaaclab_arena_environment, arena_env_builder_cfg_from_argparse(args_cli))
+    env = env_builder.make_registered()
+    env.reset()
+
+    return env, robot_init_base_pose
+
+
+def step_standing_actions_call(env, num_steps, robot_init_base_pose, function=None, pink_ik_enabled=False):
+    for _ in tqdm.tqdm(range(num_steps)):
+        with torch.inference_mode():
+            if pink_ik_enabled:
+                actions = torch.tensor(WBC_PINK_IDLE_ACTION, device=env.unwrapped.device).unsqueeze(0)
+            else:
+                actions = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+            # NOTE(xinjieyao, 2025.09.22): Set base height to 0.75m to avoid robot squatting to match 0-height command.
+            actions[:, -4] = 0.75
+            _, _, _, _, _ = env.step(actions)
+            if function is not None:
+                function(env, robot_init_base_pose)
+
+
+def _test_wbc_joint_standing_idle_actions(simulation_app) -> bool:
+
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
+
+    # Get the scene
+    env, robot_init_base_pose = get_test_environment(num_envs=1, pink_ik_enabled=False)
+
+    def assert_standing_idle(env: ManagerBasedEnv, robot_init_base_pose: np.ndarray):
+        # get robot base pose after actions call
+        robot_base_pose = wp.to_torch(env.unwrapped.scene["robot"].data.root_link_pose_w)[0, :3].cpu().numpy()
+        # check if robot base pose is close to initial base pose
+        robot_xy_error = np.linalg.norm(robot_base_pose[:2] - robot_init_base_pose[:2])
+        assert robot_xy_error < STANDING_POSITION_XY_EPS, "Robot moved away from initial position."
+
+    try:
+        # sending standing idle actions
+        step_standing_actions_call(env, NUM_STEPS, robot_init_base_pose, assert_standing_idle)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        traceback.print_exc()
+        return False
+
+    finally:
+        env.close()
+
+    return True
+
+
+@pytest.mark.with_cameras
+def test_wbc_joint_standing_idle_actions_single_env():
+    result = run_function_with_persistent_simulation_app(
+        _test_wbc_joint_standing_idle_actions,
+        headless=HEADLESS,
+        enable_cameras=ENABLE_CAMERAS,
+    )
+    assert result, f"Test {_test_wbc_joint_standing_idle_actions.__name__} failed"
+
+
+def _test_wbc_pink_standing_idle_actions(simulation_app) -> bool:
+
+    from isaaclab.envs.manager_based_env import ManagerBasedEnv
+
+    # Get the scene
+    env, robot_init_base_pose = get_test_environment(num_envs=1, pink_ik_enabled=True)
+
+    def assert_standing_idle(env: ManagerBasedEnv, robot_init_base_pose: np.ndarray):
+        # get robot base pose after actions call (use wp.to_torch like joint test; root_link_pose_w is a Warp array)
+        robot_base_pose = wp.to_torch(env.unwrapped.scene["robot"].data.root_link_pose_w)[0, :3].cpu().numpy()
+        # check if robot base pose is close to initial base pose
+        robot_xy_error = np.linalg.norm(robot_base_pose[:2] - robot_init_base_pose[:2])
+        assert robot_xy_error < STANDING_POSITION_XY_EPS, "Robot moved away from initial position."
+
+    try:
+        # sending standing idle actions
+        step_standing_actions_call(env, NUM_STEPS, robot_init_base_pose, assert_standing_idle, True)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
+    finally:
+        env.close()
+
+    return True
+
+
+@pytest.mark.with_cameras
+def test_wbc_pink_standing_idle_actions_single_env():
+    result = run_function_with_persistent_simulation_app(
+        _test_wbc_pink_standing_idle_actions,
+        headless=HEADLESS,
+        enable_cameras=ENABLE_CAMERAS,
+    )
+    assert result, f"Test {_test_wbc_pink_standing_idle_actions.__name__} failed"
+
+
+if __name__ == "__main__":
+    test_wbc_joint_standing_idle_actions_single_env()
+    test_wbc_pink_standing_idle_actions_single_env()

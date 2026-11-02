@@ -1,0 +1,14 @@
+# Copyright (c) 2026, The Isaac Lab Arena Project Developers (https://github.com/isaac-sim/IsaacLab-Arena/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Baseline high level with the built-in controller run as a team low level (43 joint targets), as a reference for
+# teams that write their own low level.
+team_name: baseline_custom_low_level
+high_level:
+  class: isaaclab_arena_g1.challenge.high_level.baseline.BaselineHighLevel
+  options: {}
+low_level:
+  class: isaaclab_arena_g1.challenge.low_level.wbc.WbcLowLevel
+  options: {}
